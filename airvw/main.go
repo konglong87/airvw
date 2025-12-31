@@ -260,15 +260,25 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 		return "", nil, nil, fmt.Errorf("百炼API调用失败：%w", err)
 	}
 
-	// 打印响应详情（便于排查）
 	fmt.Printf("ℹ️【AICodeReview】百炼API响应状态码：%d\n", resp.StatusCode())
 	fmt.Printf("ℹ️【AICodeReview】百炼API响应内容：%s\n", string(resp.Body()))
 
 	// 解析百炼原生API响应
 	var aiResp struct {
 		Output struct {
-			Text string `json:"text"` // 百炼原生响应的结果字段
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+					Role    string `json:"role"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
 		} `json:"output"`
+		Usage struct {
+			TotalTokens  int `json:"total_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			InputTokens  int `json:"input_tokens"`
+		} `json:"usage"`
 		RequestID string `json:"request_id"`
 		Code      string `json:"code"`    // 错误码（成功时为空）
 		Message   string `json:"message"` // 错误信息（成功时为空）
@@ -285,8 +295,13 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	}
 
 	// 处理AI评审结果
-	aiResult := strings.TrimSpace(aiResp.Output.Text)
+	var aiResult string
+	if len(aiResp.Output.Choices) > 0 {
+		aiResult = strings.TrimSpace(aiResp.Output.Choices[0].Message.Content)
+	}
 	fmt.Printf("✅【AICodeReview】百炼API调用成功，RequestID：%s\n", aiResp.RequestID)
+	fmt.Printf("ℹ️【AICodeReview】Token使用情况：Total=%d, Input=%d, Output=%d\n",
+		aiResp.Usage.TotalTokens, aiResp.Usage.InputTokens, aiResp.Usage.OutputTokens)
 	fmt.Printf("ℹ️【AICodeReview】AI评审结果：%s\n", aiResult)
 
 	// 提取阻断级和高级别问题
@@ -336,9 +351,8 @@ func CommentMR(config Config, reviewResult string) error {
 
 	// 构建请求：完全匹配官方文档规范
 	resp, err := client.R().
-		SetHeader("x-yunxiao-token", config.YunxiaoToken). // 官方要求的认证Header
-		SetHeader("Content-Type", "application/json"). // 官方要求的Content-Type
-		// 官方要求的请求体：仅需content字段（核心）
+		SetHeader("x-yunxiao-token", config.YunxiaoToken).
+		SetHeader("Content-Type", "application/json").
 		SetBody(map[string]interface{}{
 			"content": commentBody,
 			// 可选参数（如需回复特定评论，可添加parentId）
@@ -348,13 +362,11 @@ func CommentMR(config Config, reviewResult string) error {
 		Post(fmt.Sprintf("https://%s/oapi/v1/codeup/change_requests/%d/comments",
 			config.CodeupDomain, config.MRID))
 
-	// 错误处理：请求失败
 	if err != nil {
 		fmt.Printf("❌【CommentMR】创建MR评论API调用失败：%v\n", err)
 		return fmt.Errorf("创建MR评论API调用失败：%w", err)
 	}
 
-	// 错误处理：非200/201状态码（兼容官方常见成功状态码）
 	if resp.StatusCode() != 200 && resp.StatusCode() != 201 {
 		fmt.Printf("❌【CommentMR】创建MR评论失败：状态码%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
 		return fmt.Errorf("创建MR评论失败：状态码%d，响应内容：%s", resp.StatusCode(), string(resp.Body()))
@@ -401,8 +413,8 @@ func CommentCommit(config Config, reviewResult string) error {
 
 	// 构建请求：完全匹配云效创建Commit评论的官方API规范
 	resp, err := client.R().
-		SetHeader("x-yunxiao-token", config.YunxiaoToken). // 官方要求的认证Header
-		SetHeader("Content-Type", "application/json"). // 官方要求的Content-Type
+		SetHeader("x-yunxiao-token", config.YunxiaoToken).
+		SetHeader("Content-Type", "application/json").
 		// 官方要求的请求体：仅需content字段
 		SetBody(map[string]interface{}{
 			"content": commentBody,
