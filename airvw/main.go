@@ -11,7 +11,6 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// 全局常量：问题等级定义
 const (
 	LevelBlock   = "block"   // 阻断级，直接终止MR合并
 	LevelHigh    = "high"    // 高风险，需修复
@@ -34,7 +33,7 @@ type Config struct {
 	CommitID       string // 评论Commit时的commit hash（comment-target=commit时必填）
 }
 
-// DiffItem 对应接口返回的diffs数组元素（匹配实际返回值）
+// DiffItem 对应接口返回的diffs数组元素
 type DiffItem struct {
 	Diff        string `json:"diff"`        // 变更内容（diff格式）
 	NewPath     string `json:"newPath"`     // 文件路径（新增/修改后）
@@ -42,20 +41,19 @@ type DiffItem struct {
 	NewFile     bool   `json:"newFile"`     // 是否为新增文件
 	DeletedFile bool   `json:"deletedFile"` // 是否为删除文件
 	RenamedFile bool   `json:"renamedFile"` // 是否为重命名文件
-	Binary      bool   `json:"binary"`      // 是否为二进制文件（过滤用）
+	Binary      bool   `json:"binary"`      // 是否为二进制文件
 }
 
 // CompareResponse 适配云效OpenAPI返回的结构体
 type CompareResponse struct {
 	Commits  []interface{} `json:"commits"`  // 提交记录（暂不使用）
 	Diffs    []DiffItem    `json:"diffs"`    // 核心：变更文件列表
-	Messages []string      `json:"messages"` // 消息（暂不使用）
+	Messages []string      `json:"messages"` //
 }
 
 // 全局client变量
 var client = resty.New()
 
-// 脱敏函数：敏感信息只显示前6位+****
 func maskSensitive(str string) string {
 	if len(str) <= 6 {
 		return "****"
@@ -65,7 +63,6 @@ func maskSensitive(str string) string {
 
 // 1. 拉取MR变更代码（完全适配云效OpenAPI + 详细日志）
 func GetMRDiff(config Config) (map[string]string, error) {
-	// 打印Config详情（脱敏敏感信息）
 	fmt.Println("=====================================")
 	fmt.Println("【GetMRDiff】开始执行，配置详情：")
 	fmt.Printf("  - YunxiaoToken: %s\n", maskSensitive(config.YunxiaoToken))
@@ -214,7 +211,6 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 			file, lintResults[file], content)
 	}
 
-	// 优化后的Prompt：新增内存泄漏、竞态检查维度
 	prompt := fmt.Sprintf(`
 你是资深Golang工程师，仅评审Codeup MR中新增/修改的Go代码，严格按以下要求输出：
 1. 评审维度：并发安全、Error处理、内存优化、代码规范、逻辑漏洞、性能问题、内存泄漏、竞态检查；
@@ -253,7 +249,6 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	}
 	fmt.Printf("ℹ️【AICodeReview】构造的请求体：\n%s\n", string(requestBodyJSON))
 
-	// 调用百炼原生API
 	fmt.Println("ℹ️【AICodeReview】开始调用百炼原生API...")
 	resp, err := client.R().
 		SetHeader("Content-Type", "application/json"). // 强制指定JSON格式
@@ -315,7 +310,7 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	return aiResult, blockIssues, nil
 }
 
-// 4. 将评审结果评论到Codeup MR（完全适配官方创建MR评论API + 增加日志）
+// 4. 将评审结果评论到Codeup MR
 func CommentMR(config Config, reviewResult string) error {
 	fmt.Println("\n=====================================")
 	fmt.Println("【CommentMR】开始执行")
@@ -373,7 +368,7 @@ func CommentMR(config Config, reviewResult string) error {
 	return nil
 }
 
-// 5. 将评审结果评论到Codeup Commit（适配官方创建Commit评论API + 完整日志 + 解析容错）
+// 5. 将评审结果评论到Codeup Commit
 func CommentCommit(config Config, reviewResult string) error {
 	fmt.Println("\n=====================================")
 	fmt.Println("【CommentCommit】开始执行")
@@ -453,7 +448,7 @@ func CommentCommit(config Config, reviewResult string) error {
 	return nil
 }
 
-// 自定义帮助信息
+// 帮助信息
 func printUsage() {
 	usage := `
 🚀 airvw - AI驱动的Codeup Go代码评审工具
@@ -516,7 +511,6 @@ func main() {
 
 	fmt.Println("🚀 开始执行AI Code Review流程...")
 
-	// 解析命令行参数（新增评论目标/CommitID参数）
 	var config Config
 	flag.StringVar(&config.YunxiaoToken, "yunxiao-token", "", "云效Token（x-yunxiao-token，必填）")
 	flag.StringVar(&config.OrgID, "org-id", "", "组织ID（如67aaaaaaaaaa，必填）")
@@ -531,7 +525,6 @@ func main() {
 	flag.StringVar(&config.CommitID, "commit-id", "", "评论Commit时的commit hash（comment-target=commit时必填）")
 	flag.Parse()
 
-	// 如果仅输入--help，打印帮助信息后退出
 	if len(os.Args) == 2 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
 		printUsage()
 		os.Exit(0)
@@ -613,7 +606,6 @@ func main() {
 		fmt.Printf("⚠️【airvw】评论%s失败（不终止评审）：%s\n", config.CommentTarget, commentErr)
 	}
 
-	// 步骤5：阻断级问题处理
 	if config.ReviewLevel == LevelBlock && len(blockIssues) > 0 {
 		fmt.Printf("\n❌【airvw】检测到%d个阻断级问题，终止流程！\n", len(blockIssues))
 		for _, issue := range blockIssues {
