@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	LevelBlock   = "block"   // 阻断级，直接终止MR合并
-	LevelHigh    = "high"    // 高风险，需修复
-	LevelMedium  = "medium"  // 中风险，建议修复
-	LevelSuggest = "suggest" // 建议优化，不强制
+	LevelBlock   = "block"   // 阻断级
+	LevelHigh    = "high"    // 高风险
+	LevelMedium  = "medium"  // 中风险
+	LevelSuggest = "suggest" // 建议
 )
 
 // Config 综合配置结构体（新增评论目标/CommitID）
@@ -51,7 +51,6 @@ type CompareResponse struct {
 	Messages []string      `json:"messages"` //
 }
 
-// 全局client变量
 var client = resty.New()
 
 func maskSensitive(str string) string {
@@ -61,7 +60,7 @@ func maskSensitive(str string) string {
 	return str[:6] + "****"
 }
 
-// 1. 拉取MR变更代码（完全适配云效OpenAPI + 详细日志）
+// 1. 拉取MR变更代码
 func GetMRDiff(config Config) (map[string]string, error) {
 	fmt.Println("=====================================")
 	fmt.Println("【GetMRDiff】开始执行，配置详情：")
@@ -92,26 +91,22 @@ func GetMRDiff(config Config) (map[string]string, error) {
 		Get(fmt.Sprintf("https://%s/oapi/v1/codeup/organizations/%s/repositories/%d/compares",
 			config.CodeupDomain, config.OrgID, config.RepoID))
 
-	// 错误处理：请求失败
 	if err != nil {
 		fmt.Printf("❌【GetMRDiff】云效OpenAPI请求失败：%v\n", err)
 		return nil, fmt.Errorf("云效OpenAPI请求失败：%w", err)
 	}
-	// 错误处理：非200状态码
 	if resp.StatusCode() != 200 {
 		fmt.Printf("❌【GetMRDiff】云效OpenAPI返回异常状态码：%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
 		return nil, fmt.Errorf("云效OpenAPI返回异常状态码：%d，响应内容：%s",
 			resp.StatusCode(), string(resp.Body()))
 	}
 
-	// 解析响应JSON
 	var compareResp CompareResponse
 	if err := json.Unmarshal(resp.Body(), &compareResp); err != nil {
 		fmt.Printf("❌【GetMRDiff】解析云效OpenAPI响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
 		return nil, fmt.Errorf("解析云效OpenAPI响应失败：%w，响应内容：%s", err, string(resp.Body()))
 	}
 
-	// 打印响应概要
 	fmt.Printf("✅【GetMRDiff】成功拉取响应，共检测到%d个变更文件\n", len(compareResp.Diffs))
 
 	// 过滤：仅保留新增/修改的Go文件
@@ -467,7 +462,7 @@ func CommentCommit(config Config, reviewResult string) error {
 func printUsage() {
 	usage := `
 🚀 airvw - AI驱动的Codeup Go代码评审工具
-============================================
+=====================***=======================
 功能：自动拉取Codeup MR/Commit的Go代码变更，执行golangci-lint检查，调用阿里云百炼AI评审，
       支持将评审结果评论到MR/Commit，阻断级问题直接终止流程。
 
