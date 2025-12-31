@@ -199,7 +199,7 @@ func RunGolangciLint(repoPath string, diffFiles map[string]string) map[string]st
 }
 
 // 3. 调用阿里云百炼API进行AI代码评审（修复JSON格式 + 新增请求体日志）
-func AICodeReview(config Config, diffFiles map[string]string, lintResults map[string]string) (string, []string, error) {
+func AICodeReview(config Config, diffFiles map[string]string, lintResults map[string]string) (string, []string, []string, error) {
 	fmt.Println("\n=====================================")
 	fmt.Println("【AICodeReview】开始执行")
 	fmt.Printf("  - 待评审文件数：%d\n", len(diffFiles))
@@ -245,7 +245,7 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	requestBodyJSON, err := json.MarshalIndent(requestBody, "", "  ")
 	if err != nil {
 		fmt.Printf("❌【AICodeReview】构造请求体JSON失败：%v\n", err)
-		return "", nil, fmt.Errorf("构造请求体JSON失败：%w", err)
+		return "", nil, nil, fmt.Errorf("构造请求体JSON失败：%w", err)
 	}
 	fmt.Printf("ℹ️【AICodeReview】构造的请求体：\n%s\n", string(requestBodyJSON))
 
@@ -258,7 +258,7 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 
 	if err != nil {
 		fmt.Printf("❌【AICodeReview】百炼API调用失败：%v\n", err)
-		return "", nil, fmt.Errorf("百炼API调用失败：%w", err)
+		return "", nil, nil, fmt.Errorf("百炼API调用失败：%w", err)
 	}
 
 	// 打印响应详情（便于排查）
@@ -276,13 +276,13 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	}
 	if err := json.Unmarshal(resp.Body(), &aiResp); err != nil {
 		fmt.Printf("❌【AICodeReview】解析百炼API响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
-		return "", nil, fmt.Errorf("解析百炼API响应失败：%w，响应内容：%s", err, string(resp.Body()))
+		return "", nil, nil, fmt.Errorf("解析百炼API响应失败：%w，响应内容：%s", err, string(resp.Body()))
 	}
 
 	// 检查百炼API是否返回错误
 	if aiResp.Code != "" {
 		fmt.Printf("❌【AICodeReview】百炼API返回业务错误：code=%s, message=%s\n", aiResp.Code, aiResp.Message)
-		return "", nil, fmt.Errorf("百炼API业务错误：%s - %s", aiResp.Code, aiResp.Message)
+		return "", nil, nil, fmt.Errorf("百炼API业务错误：%s - %s", aiResp.Code, aiResp.Message)
 	}
 
 	// 处理AI评审结果
@@ -290,8 +290,9 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	fmt.Printf("✅【AICodeReview】百炼API调用成功，RequestID：%s\n", aiResp.RequestID)
 	fmt.Printf("ℹ️【AICodeReview】AI评审结果：%s\n", aiResult)
 
-	// 提取阻断级问题
+	// 提取阻断级和高级别问题
 	var blockIssues []string
+	var highIssues []string
 	if aiResult != "✅ 未发现任何问题" {
 		lines := strings.Split(aiResult, "\n")
 		for _, line := range lines {
@@ -302,12 +303,15 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 			if strings.Contains(line, fmt.Sprintf("[%s]", LevelBlock)) {
 				blockIssues = append(blockIssues, line)
 				fmt.Printf("❌【AICodeReview】检测到阻断级问题：%s\n", line)
+			} else if strings.Contains(line, fmt.Sprintf("[%s]", LevelHigh)) {
+				highIssues = append(highIssues, line)
+				fmt.Printf("⚠️【AICodeReview】检测到高级别问题：%s\n", line)
 			}
 		}
 	}
 
-	fmt.Printf("📊【AICodeReview】AI评审完成，检测到%d个阻断级问题\n", len(blockIssues))
-	return aiResult, blockIssues, nil
+	fmt.Printf("📊【AICodeReview】AI评审完成，检测到%d个阻断级问题，%d个高级别问题\n", len(blockIssues), len(highIssues))
+	return aiResult, blockIssues, highIssues, nil
 }
 
 // 4. 将评审结果评论到Codeup MR
@@ -586,7 +590,7 @@ func main() {
 	lintResults := RunGolangciLint(".", diffFiles)
 
 	// 步骤3：AI代码评审
-	aiResult, blockIssues, err := AICodeReview(config, diffFiles, lintResults)
+	aiResult, blockIssues, highIssues, err := AICodeReview(config, diffFiles, lintResults)
 	if err != nil {
 		fmt.Printf("❌【airvw】AI评审失败：%s\n", err)
 		os.Exit(1)
@@ -606,9 +610,24 @@ func main() {
 		fmt.Printf("⚠️【airvw】评论%s失败（不终止评审）：%s\n", config.CommentTarget, commentErr)
 	}
 
+	// 根据评审等级判断是否终止流程
+	var shouldBlock bool
+	var blockReason string
+	var blockList []string
+
 	if config.ReviewLevel == LevelBlock && len(blockIssues) > 0 {
-		fmt.Printf("\n❌【airvw】检测到%d个阻断级问题，终止流程！\n", len(blockIssues))
-		for _, issue := range blockIssues {
+		shouldBlock = true
+		blockReason = "阻断级"
+		blockList = blockIssues
+	} else if config.ReviewLevel == LevelHigh && (len(blockIssues) > 0 || len(highIssues) > 0) {
+		shouldBlock = true
+		blockReason = "高级别"
+		blockList = append(blockIssues, highIssues...)
+	}
+
+	if shouldBlock {
+		fmt.Printf("\n❌【airvw】检测到%d个%s问题，终止流程！\n", len(blockList), blockReason)
+		for _, issue := range blockList {
 			fmt.Printf("  - %s\n", issue)
 		}
 		os.Exit(1)
