@@ -219,7 +219,7 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 %s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
 
 	requestBody := map[string]interface{}{
-		"model": "qwen3-coder-plus", //
+		"model": "qwen3-coder-plus",
 		"input": map[string]interface{}{
 			"messages": []map[string]interface{}{
 				{
@@ -229,13 +229,12 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 			},
 		},
 		"parameters": map[string]interface{}{
-			"max_new_tokens": 2000,
+			"max_new_tokens": 4095,
 			"temperature":    0.2,
 			"top_p":          0.9,
 		},
 	}
 
-	// 新增：打印请求体（脱敏后），便于排查JSON格式问题
 	requestBodyJSON, err := json.MarshalIndent(requestBody, "", "  ")
 	if err != nil {
 		fmt.Printf("❌【AICodeReview】构造请求体JSON失败：%v\n", err)
@@ -258,7 +257,6 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	fmt.Printf("ℹ️【AICodeReview】百炼API响应状态码：%d\n", resp.StatusCode())
 	fmt.Printf("ℹ️【AICodeReview】百炼API响应内容：%s\n", string(resp.Body()))
 
-	// 解析百炼原生API响应
 	var aiResp struct {
 		Output struct {
 			Choices []struct {
@@ -283,13 +281,11 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 		return "", nil, nil, fmt.Errorf("解析百炼API响应失败：%w，响应内容：%s", err, string(resp.Body()))
 	}
 
-	// 检查百炼API是否返回错误
 	if aiResp.Code != "" {
 		fmt.Printf("❌【AICodeReview】百炼API返回业务错误：code=%s, message=%s\n", aiResp.Code, aiResp.Message)
 		return "", nil, nil, fmt.Errorf("百炼API业务错误：%s - %s", aiResp.Code, aiResp.Message)
 	}
 
-	// 处理AI评审结果
 	var aiResult string
 	if len(aiResp.Output.Choices) > 0 {
 		aiResult = strings.TrimSpace(aiResp.Output.Choices[0].Message.Content)
@@ -319,7 +315,7 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 		}
 	}
 
-	fmt.Printf("📊【AICodeReview】AI评审完成，检测到%d个阻断级问题，%d个高级别问题\n", len(blockIssues), len(highIssues))
+	fmt.Printf("📊【AICodeReview】AI评审完成，检测到%d个阻断级问题，%d个高级别问题.\n", len(blockIssues), len(highIssues))
 	return aiResult, blockIssues, highIssues, nil
 }
 
@@ -330,7 +326,6 @@ func CommentMR(config Config, reviewResult string) error {
 	fmt.Printf("  - MRID：%d\n", config.MRID)
 	fmt.Println("=====================================")
 
-	// 构造符合官方要求的评论内容
 	commentBody := fmt.Sprintf(`
 ### 🤖 AI Code Review 结果（MR #%d）
 #### 评审范围：提交ID %s → %s 变更的Go文件
@@ -344,7 +339,6 @@ func CommentMR(config Config, reviewResult string) error {
 %s`, config.MRID, config.FromCommit, config.ToCommit,
 		LevelBlock, LevelHigh, LevelMedium, LevelSuggest, reviewResult)
 
-	// 构建请求：完全匹配官方文档规范
 	resp, err := client.R().
 		SetHeader("x-yunxiao-token", config.YunxiaoToken).
 		SetHeader("Content-Type", "application/json").
@@ -353,7 +347,6 @@ func CommentMR(config Config, reviewResult string) error {
 			// 可选参数（如需回复特定评论，可添加parentId）
 			// "parentId": 0,
 		}).
-		// 官方指定的API路径：change_requests/{changeRequestId}/comments
 		Post(fmt.Sprintf("https://%s/oapi/v1/codeup/change_requests/%d/comments",
 			config.CodeupDomain, config.MRID))
 
@@ -367,7 +360,6 @@ func CommentMR(config Config, reviewResult string) error {
 		return fmt.Errorf("创建MR评论失败：状态码%d，响应内容：%s", resp.StatusCode(), string(resp.Body()))
 	}
 
-	// 解析响应（可选，验证评论是否创建成功）
 	var commentResp map[string]interface{}
 	if err := json.Unmarshal(resp.Body(), &commentResp); err != nil {
 		fmt.Printf("⚠️【CommentMR】解析MR评论响应失败（但评论已提交）：%s\n", err)
@@ -392,7 +384,6 @@ func CommentCommit(config Config, reviewResult string) error {
 		fmt.Println("ℹ️【CommentCommit】AI评审结果为空，跳过评论提交")
 		return nil
 	}
-	// 构造Commit评论内容（适配Commit场景的文案）
 	commentBody := fmt.Sprintf(`
 ### 🤖 AI Code Review 结果（Commit %s）
 #### 评审范围：提交ID %s → %s 变更的Go文件
@@ -406,11 +397,9 @@ func CommentCommit(config Config, reviewResult string) error {
 %s`, config.CommitID, config.FromCommit, config.ToCommit,
 		LevelBlock, LevelHigh, LevelMedium, LevelSuggest, reviewResult)
 
-	// 构建请求：完全匹配云效创建Commit评论的官方API规范
 	resp, err := client.R().
 		SetHeader("x-yunxiao-token", config.YunxiaoToken).
 		SetHeader("Content-Type", "application/json").
-		// 官方要求的请求体：仅需content字段
 		SetBody(map[string]interface{}{
 			"content": commentBody,
 		}).
@@ -418,13 +407,11 @@ func CommentCommit(config Config, reviewResult string) error {
 		Post(fmt.Sprintf("https://%s/oapi/v1/codeup/organizations/%s/repositories/%d/commits/%s/comments",
 			config.CodeupDomain, config.OrgID, config.RepoID, config.CommitID))
 
-	// 错误处理：请求失败
 	if err != nil {
 		fmt.Printf("❌【CommentCommit】创建Commit评论API调用失败：%v\n", err)
 		return fmt.Errorf("创建Commit评论API调用失败：%w", err)
 	}
 
-	// 错误处理：非200/201状态码（兼容官方常见成功状态码）
 	if resp.StatusCode() != 200 && resp.StatusCode() != 201 {
 		// 新增403权限错误的友好提示
 		if resp.StatusCode() == 403 {
@@ -438,7 +425,6 @@ func CommentCommit(config Config, reviewResult string) error {
 		return fmt.Errorf("创建Commit评论失败：状态码%d，响应内容：%s", resp.StatusCode(), string(resp.Body()))
 	}
 
-	// 优化解析逻辑：先检查响应体是否为空，再解析
 	fmt.Printf("✅【CommentCommit】Commit评论提交成功（状态码：%d）\n", resp.StatusCode())
 	respBody := string(resp.Body())
 	if respBody == "" {
@@ -446,14 +432,12 @@ func CommentCommit(config Config, reviewResult string) error {
 		return nil
 	}
 
-	// 解析响应（验证评论是否创建成功）
 	var commentResp map[string]interface{}
 	if err := json.Unmarshal(resp.Body(), &commentResp); err != nil {
 		fmt.Printf("ℹ️【CommentCommit】解析响应失败（但评论已提交）：%s，响应体：%s\n", err, respBody)
 		return nil // 解析失败不返回错误，因为核心功能（评论提交）已完成
 	}
 
-	// 解析成功则打印评论ID
 	fmt.Printf("✅【CommentCommit】评审结果评论成功，评论ID：%v\n", commentResp["id"])
 	return nil
 }
@@ -514,9 +498,7 @@ func printUsage() {
 	fmt.Println(usage)
 }
 
-// 主函数：整合所有流程（增加评论目标逻辑）
 func main() {
-	// 自定义help信息
 	flag.Usage = printUsage
 
 	fmt.Println("🚀 开始执行AI Code Review流程...")
@@ -540,12 +522,10 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 打印参数接收日志
 	fmt.Println("\n=====================================")
 	fmt.Println("【airvw】命令行参数解析完成")
 	fmt.Println("=====================================")
 
-	// 强化参数校验（按评论目标区分必填项）
 	var missingParams []string
 	if config.YunxiaoToken == "" {
 		missingParams = append(missingParams, "yunxiao-token")
@@ -566,7 +546,6 @@ func main() {
 		missingParams = append(missingParams, "baichuan-key")
 	}
 
-	// 仅当评论目标为mr/commit时，校验对应的专属参数
 	if config.CommentTarget == "mr" && config.MRID == 0 {
 		missingParams = append(missingParams, "mr-id（评论MR时必填）")
 	}
@@ -574,7 +553,6 @@ func main() {
 		missingParams = append(missingParams, "commit-id（评论Commit时必填）")
 	}
 
-	// 输出缺失参数并退出
 	if len(missingParams) > 0 {
 		fmt.Printf("❌【airvw】错误：缺少必填参数：%s\n", strings.Join(missingParams, ", "))
 		printUsage()
@@ -616,7 +594,6 @@ func main() {
 		fmt.Printf("⚠️【airvw】评论%s失败（不终止评审）：%s\n", config.CommentTarget, commentErr)
 	}
 
-	// 根据评审等级判断是否终止流程
 	var shouldBlock bool
 	var blockReason string
 	var blockList []string
