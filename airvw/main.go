@@ -467,7 +467,7 @@ func printUsage() {
       支持将评审结果评论到MR/Commit，阻断级问题直接终止流程。
 
 📦 安装方式：
-  go install github.com/你的用户名/airvw@latest
+  go install github.com/konglong87/airvw@latest
 
 🔧 使用方式：
   airvw [参数]
