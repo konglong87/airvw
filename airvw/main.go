@@ -82,8 +82,8 @@ func GetMRDiff(config Config) (map[string]string, error) {
 
 	// 构建请求：核心修正 - 域名/Header/路径/参数
 	resp, err := client.R().
-		SetHeader("x-yunxiao-token", config.YunxiaoToken). // 认证Header为x-yunxiao-token
-		SetHeader("Accept", "application/json"). // 匹配示例中的Accept头
+		SetHeader("x-yunxiao-token", config.YunxiaoToken).
+		SetHeader("Accept", "application/json").
 		SetQueryParams(map[string]string{
 			"from": config.FromCommit, // from为提交ID
 			"to":   config.ToCommit,   // to为提交ID
@@ -223,14 +223,13 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 ---------------------
 %s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
 
-	// 修复：构造百炼原生API要求的合法JSON请求体
 	requestBody := map[string]interface{}{
-		"model": "qwen3-coder-plus", // 模型名称改为qwen3-coder-plus
+		"model": "qwen3-coder-plus", //
 		"input": map[string]interface{}{
 			"messages": []map[string]interface{}{
 				{
-					"role":    "user", // 角色固定为user
-					"content": prompt, // Prompt内容
+					"role":    "user",
+					"content": prompt,
 				},
 			},
 		},
