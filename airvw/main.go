@@ -31,6 +31,7 @@ type Config struct {
 	ReviewLevel    string // 评审等级，默认block
 	CommentTarget  string // 评论目标：mr（默认）/commit/空（不评论）
 	CommitID       string // 评论Commit时的commit hash（comment-target=commit时必填）
+	Language       string // 评审语言：golang/java/python（默认golang）
 }
 
 // DiffItem 对应接口返回的diffs数组元素
@@ -53,6 +54,344 @@ type CompareResponse struct {
 
 var client = resty.New()
 
+// ReviewProcess 代码评审流程接口
+type ReviewProcess interface {
+	// GetFileExtension 获取需要评审的文件扩展名
+	GetFileExtension() string
+	// GetPrompt 获取AI评审的prompt
+	GetPrompt(diffFiles map[string]string, lintResults map[string]string) string
+	// RunLint 执行代码静态检查
+	RunLint(repoPath string, diffFiles map[string]string) map[string]string
+	// FilterFiles 过滤需要评审的文件
+	FilterFiles(diffItems []DiffItem) map[string]string
+}
+
+// GolangReviewProcess Golang语言的评审流程实现
+type GolangReviewProcess struct{}
+
+func (g *GolangReviewProcess) GetFileExtension() string {
+	return ".go"
+}
+
+func (g *GolangReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
+	var reviewContent string
+	for file, content := range diffFiles {
+		reviewContent += fmt.Sprintf("=== 文件：%s ===\n规则检查结果：%s\n代码变更内容：\n%s\n\n",
+			file, lintResults[file], content)
+	}
+
+	return fmt.Sprintf(`
+你是资深Golang工程师，仅评审Codeup MR中新增/修改的Go代码，严格按以下要求输出：
+1. 评审维度：并发安全、Error处理、内存优化、代码规范、逻辑漏洞、性能问题、内存泄漏、竞态检查、空指针解引用、内存溢出；
+2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
+3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
+4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
+5. 若无问题，仅输出「✅ 未发现任何问题」。
+
+待评审的MR变更代码-
+---------------------
+%s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
+}
+
+func (g *GolangReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
+	fmt.Println("\n=====================================")
+	fmt.Println("【RunGolangciLint】开始执行")
+	fmt.Printf("  - 仓库路径：%s\n", repoPath)
+	fmt.Printf("  - 待检查文件数：%d\n", len(diffFiles))
+	fmt.Println("=====================================")
+
+	lintResults := make(map[string]string)
+
+	if _, err := exec.LookPath("golangci-lint"); err != nil {
+		fmt.Println("⚠️【RunGolangciLint】未检测到golangci-lint，跳过规则检查")
+		for file := range diffFiles {
+			lintResults[file] = "【规则检查】未执行：缺少golangci-lint环境"
+		}
+		return lintResults
+	}
+
+	for file := range diffFiles {
+		fmt.Printf("ℹ️【RunGolangciLint】检查文件：%s\n", file)
+		cmd := exec.Command("bash", "-c",
+			fmt.Sprintf("cd %s && golangci-lint run --new-from-rev=origin/main %s", repoPath, file))
+		output, err := cmd.CombinedOutput()
+
+		if err != nil {
+			fmt.Printf("⚠️【RunGolangciLint】文件%s检查失败：%v\n", file, err)
+			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
+			continue
+		}
+
+		if string(output) == "" {
+			fmt.Printf("✅【RunGolangciLint】文件%s未发现违规问题\n", file)
+			lintResults[file] = "【规则检查】未发现违规问题"
+		} else {
+			fmt.Printf("⚠️【RunGolangciLint】文件%s发现违规问题：%s\n", file, string(output))
+			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
+		}
+	}
+
+	return lintResults
+}
+
+func (g *GolangReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string {
+	diffMap := make(map[string]string)
+	for _, diffItem := range diffItems {
+		// 跳过二进制文件
+		if diffItem.Binary {
+			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			continue
+		}
+
+		// 确定文件路径（兼容重命名/删除场景）
+		filePath := diffItem.NewPath
+		if filePath == "" {
+			filePath = diffItem.OldPath
+		}
+
+		// 确定文件状态
+		var status string
+		if diffItem.NewFile {
+			status = "added"
+		} else if diffItem.DeletedFile {
+			status = "removed"
+		} else if diffItem.RenamedFile {
+			status = "renamed"
+		} else {
+			status = "modified"
+		}
+
+		// 仅保留新增/修改的Go文件
+		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".go") {
+			diffMap[filePath] = diffItem.Diff
+			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+		}
+	}
+	return diffMap
+}
+
+// JavaReviewProcess Java语言的评审流程实现
+type JavaReviewProcess struct{}
+
+func (j *JavaReviewProcess) GetFileExtension() string {
+	return ".java"
+}
+
+func (j *JavaReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
+	var reviewContent string
+	for file, content := range diffFiles {
+		reviewContent += fmt.Sprintf("=== 文件：%s ===\n规则检查结果：%s\n代码变更内容：\n%s\n\n",
+			file, lintResults[file], content)
+	}
+
+	return fmt.Sprintf(`
+你是资深Java工程师，仅评审Codeup MR中新增/修改的Java代码，严格按以下要求输出：
+1. 评审维度：并发安全、异常处理、内存优化、代码规范、逻辑漏洞、性能问题、资源泄漏、空指针异常、集合使用、线程安全；
+2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
+3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
+4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
+5. 若无问题，仅输出「✅ 未发现任何问题」。
+
+待评审的MR变更代码-
+---------------------
+%s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
+}
+
+func (j *JavaReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
+	fmt.Println("\n=====================================")
+	fmt.Println("【RunJavaLint】开始执行")
+	fmt.Printf("  - 仓库路径：%s\n", repoPath)
+	fmt.Printf("  - 待检查文件数：%d\n", len(diffFiles))
+	fmt.Println("=====================================")
+
+	lintResults := make(map[string]string)
+
+	// 检查是否安装了Checkstyle
+	if _, err := exec.LookPath("checkstyle"); err != nil {
+		fmt.Println("⚠️【RunJavaLint】未检测到checkstyle，跳过规则检查")
+		for file := range diffFiles {
+			lintResults[file] = "【规则检查】未执行：缺少checkstyle环境"
+		}
+		return lintResults
+	}
+
+	for file := range diffFiles {
+		fmt.Printf("ℹ️【RunJavaLint】检查文件：%s\n", file)
+		cmd := exec.Command("checkstyle", "-c", "/google_checks.xml", file)
+		output, err := cmd.CombinedOutput()
+
+		if err != nil {
+			fmt.Printf("⚠️【RunJavaLint】文件%s检查失败：%v\n", file, err)
+			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
+			continue
+		}
+
+		if string(output) == "" {
+			fmt.Printf("✅【RunJavaLint】文件%s未发现违规问题\n", file)
+			lintResults[file] = "【规则检查】未发现违规问题"
+		} else {
+			fmt.Printf("⚠️【RunJavaLint】文件%s发现违规问题：%s\n", file, string(output))
+			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
+		}
+	}
+
+	return lintResults
+}
+
+func (j *JavaReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string {
+	diffMap := make(map[string]string)
+	for _, diffItem := range diffItems {
+		// 跳过二进制文件
+		if diffItem.Binary {
+			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			continue
+		}
+
+		// 确定文件路径（兼容重命名/删除场景）
+		filePath := diffItem.NewPath
+		if filePath == "" {
+			filePath = diffItem.OldPath
+		}
+
+		// 确定文件状态
+		var status string
+		if diffItem.NewFile {
+			status = "added"
+		} else if diffItem.DeletedFile {
+			status = "removed"
+		} else if diffItem.RenamedFile {
+			status = "renamed"
+		} else {
+			status = "modified"
+		}
+
+		// 仅保留新增/修改的Java文件
+		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".java") {
+			diffMap[filePath] = diffItem.Diff
+			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+		}
+	}
+	return diffMap
+}
+
+// PythonReviewProcess Python语言的评审流程实现
+type PythonReviewProcess struct{}
+
+func (p *PythonReviewProcess) GetFileExtension() string {
+	return ".py"
+}
+
+func (p *PythonReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
+	var reviewContent string
+	for file, content := range diffFiles {
+		reviewContent += fmt.Sprintf("=== 文件：%s ===\n规则检查结果：%s\n代码变更内容：\n%s\n\n",
+			file, lintResults[file], content)
+	}
+
+	return fmt.Sprintf(`
+你是资深Python工程师，仅评审Codeup MR中新增/修改的Python代码，严格按以下要求输出：
+1. 评审维度：异常处理、代码规范(PEP8)、逻辑漏洞、性能问题、资源泄漏、类型注解、导入管理、文档字符串；
+2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
+3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
+4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
+5. 若无问题，仅输出「✅ 未发现任何问题」。
+
+待评审的MR变更代码-
+---------------------
+%s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
+}
+
+func (p *PythonReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
+	fmt.Println("\n=====================================")
+	fmt.Println("【RunPythonLint】开始执行")
+	fmt.Printf("  - 仓库路径：%s\n", repoPath)
+	fmt.Printf("  - 待检查文件数：%d\n", len(diffFiles))
+	fmt.Println("=====================================")
+
+	lintResults := make(map[string]string)
+
+	// 检查是否安装了flake8
+	if _, err := exec.LookPath("flake8"); err != nil {
+		fmt.Println("⚠️【RunPythonLint】未检测到flake8，跳过规则检查")
+		for file := range diffFiles {
+			lintResults[file] = "【规则检查】未执行：缺少flake8环境"
+		}
+		return lintResults
+	}
+
+	for file := range diffFiles {
+		fmt.Printf("ℹ️【RunPythonLint】检查文件：%s\n", file)
+		cmd := exec.Command("flake8", file)
+		output, err := cmd.CombinedOutput()
+
+		if err != nil {
+			fmt.Printf("⚠️【RunPythonLint】文件%s检查失败：%v\n", file, err)
+			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
+			continue
+		}
+
+		if string(output) == "" {
+			fmt.Printf("✅【RunPythonLint】文件%s未发现违规问题\n", file)
+			lintResults[file] = "【规则检查】未发现违规问题"
+		} else {
+			fmt.Printf("⚠️【RunPythonLint】文件%s发现违规问题：%s\n", file, string(output))
+			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
+		}
+	}
+
+	return lintResults
+}
+
+func (p *PythonReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string {
+	diffMap := make(map[string]string)
+	for _, diffItem := range diffItems {
+		// 跳过二进制文件
+		if diffItem.Binary {
+			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			continue
+		}
+
+		// 确定文件路径（兼容重命名/删除场景）
+		filePath := diffItem.NewPath
+		if filePath == "" {
+			filePath = diffItem.OldPath
+		}
+
+		// 确定文件状态
+		var status string
+		if diffItem.NewFile {
+			status = "added"
+		} else if diffItem.DeletedFile {
+			status = "removed"
+		} else if diffItem.RenamedFile {
+			status = "renamed"
+		} else {
+			status = "modified"
+		}
+
+		// 仅保留新增/修改的Python文件
+		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".py") {
+			diffMap[filePath] = diffItem.Diff
+			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+		}
+	}
+	return diffMap
+}
+
+// GetReviewProcess 根据语言获取对应的评审流程实现
+func GetReviewProcess(language string) ReviewProcess {
+	switch strings.ToLower(language) {
+	case "java":
+		return &JavaReviewProcess{}
+	case "python":
+		return &PythonReviewProcess{}
+	case "golang", "go", "":
+		fallthrough
+	default:
+		return &GolangReviewProcess{}
+	}
+}
+
 func maskSensitive(str string) string {
 	if len(str) <= 6 {
 		return "****"
@@ -61,7 +400,7 @@ func maskSensitive(str string) string {
 }
 
 // 1. 拉取MR变更代码
-func GetMRDiff(config Config) (map[string]string, error) {
+func GetMRDiff(config Config, process ReviewProcess) (map[string]string, error) {
 	fmt.Println("=====================================")
 	fmt.Println("【GetMRDiff】开始执行，配置详情：")
 	fmt.Printf("  - YunxiaoToken: %s\n", maskSensitive(config.YunxiaoToken))
@@ -109,45 +448,14 @@ func GetMRDiff(config Config) (map[string]string, error) {
 
 	fmt.Printf("✅【GetMRDiff】成功拉取响应，共检测到%d个变更文件\n", len(compareResp.Diffs))
 
-	// 过滤：仅保留新增/修改的Go文件
-	diffMap := make(map[string]string)
-	for _, diffItem := range compareResp.Diffs {
-		// 跳过二进制文件
-		if diffItem.Binary {
-			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
-			continue
-		}
-
-		// 确定文件路径（兼容重命名/删除场景）
-		filePath := diffItem.NewPath
-		if filePath == "" {
-			filePath = diffItem.OldPath
-		}
-
-		// 确定文件状态
-		var status string
-		if diffItem.NewFile {
-			status = "added"
-		} else if diffItem.DeletedFile {
-			status = "removed"
-		} else if diffItem.RenamedFile {
-			status = "renamed"
-		} else {
-			status = "modified"
-		}
-
-		// 仅保留新增/修改的Go文件
-		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".go") {
-			diffMap[filePath] = diffItem.Diff
-			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
-		}
-	}
+	// 使用ReviewProcess接口过滤文件
+	diffMap := process.FilterFiles(compareResp.Diffs)
 
 	if len(diffMap) == 0 {
-		fmt.Println("ℹ️【GetMRDiff】未检测到新增/修改的Go文件，无需评审")
+		fmt.Printf("ℹ️【GetMRDiff】未检测到新增/修改的%s文件，无需评审\n", process.GetFileExtension())
 		return diffMap, nil
 	}
-	fmt.Printf("📌【GetMRDiff】共筛选出%d个需评审的Go文件\n", len(diffMap))
+	fmt.Printf("📌【GetMRDiff】共筛选出%d个需评审的%s文件\n", len(diffMap), process.GetFileExtension())
 	return diffMap, nil
 }
 
@@ -194,29 +502,14 @@ func RunGolangciLint(repoPath string, diffFiles map[string]string) map[string]st
 }
 
 // 3. 调用阿里云百炼API进行AI代码评审（修复JSON格式 + 新增请求体日志）
-func AICodeReview(config Config, diffFiles map[string]string, lintResults map[string]string) (string, []string, []string, error) {
+func AICodeReview(config Config, diffFiles map[string]string, lintResults map[string]string, process ReviewProcess) (string, []string, []string, error) {
 	fmt.Println("\n=====================================")
 	fmt.Println("【AICodeReview】开始执行")
 	fmt.Printf("  - 待评审文件数：%d\n", len(diffFiles))
 	fmt.Println("=====================================")
 
-	var reviewContent string
-	for file, content := range diffFiles {
-		reviewContent += fmt.Sprintf("=== 文件：%s ===\n规则检查结果：%s\n代码变更内容：\n%s\n\n",
-			file, lintResults[file], content)
-	}
-
-	prompt := fmt.Sprintf(`
-你是资深Golang工程师，仅评审Codeup MR中新增/修改的Go代码，严格按以下要求输出：
-1. 评审维度：并发安全、Error处理、内存优化、代码规范、逻辑漏洞、性能问题、内存泄漏、竞态检查、空指针解引用、内存溢出；
-2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
-3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
-4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
-5. 若无问题，仅输出「✅ 未发现任何问题」。
-
-待评审的MR变更代码-
----------------------
-%s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
+	// 使用ReviewProcess接口获取prompt
+	prompt := process.GetPrompt(diffFiles, lintResults)
 
 	requestBody := map[string]interface{}{
 		"model": "qwen3-coder-plus",
@@ -244,9 +537,9 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 
 	fmt.Println("ℹ️【AICodeReview】开始调用百炼原生API...")
 	resp, err := client.R().
-		SetHeader("Content-Type", "application/json"). // 强制指定JSON格式
+		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", fmt.Sprintf("Bearer %s", config.BaichuanAPIKey)).
-		SetBody(requestBody). // resty会自动序列化为合法JSON
+		SetBody(requestBody).
 		Post("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation")
 
 	if err != nil {
@@ -273,8 +566,8 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 			InputTokens  int `json:"input_tokens"`
 		} `json:"usage"`
 		RequestID string `json:"request_id"`
-		Code      string `json:"code"`    // 错误码（成功时为空）
-		Message   string `json:"message"` // 错误信息（成功时为空）
+		Code      string `json:"code"`
+		Message   string `json:"message"`
 	}
 	if err := json.Unmarshal(resp.Body(), &aiResp); err != nil {
 		fmt.Printf("❌【AICodeReview】解析百炼API响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
@@ -445,10 +738,11 @@ func CommentCommit(config Config, reviewResult string) error {
 // 帮助信息
 func printUsage() {
 	usage := `
-🚀 airvw - AI驱动的Codeup Go代码评审工具
+🚀 airvw - AI驱动的Codeup代码评审工具
 =====================***=======================
-功能：自动拉取Codeup MR/Commit的Go代码变更，执行golangci-lint检查，调用阿里云百炼AI评审，
+功能：自动拉取Codeup MR/Commit的代码变更，执行静态检查，调用阿里云百炼AI评审，
       支持将评审结果评论到MR/Commit，阻断级问题直接终止流程。
+      支持多种编程语言：Golang/Java/Python
 
 📦 安装方式：
   go install github.com/konglong87/airvw@latest
@@ -471,6 +765,7 @@ func printUsage() {
     --comment-target string   评论目标（可选：mr/commit/空，空则不评论）
     --mr-id int               MR的ID（comment-target=mr时必填）
     --commit-id string        Commit的hash（comment-target=commit时必填）
+    --language string         评审语言（默认：golang，可选：golang/java/python）
     --help                    显示此帮助信息
 
 💡 使用示例：
@@ -489,11 +784,23 @@ func printUsage() {
            --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
            --comment-target commit
 
+  4. 评审Java代码：
+     airvw --yunxiao-token pt-xxx --org-id 67aaaaaaaaaa --repo-id 5023797 \
+           --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
+           --language java
+
+  5. 评审Python代码：
+     airvw --yunxiao-token pt-xxx --org-id 67aaaaaaaaaa --repo-id 5023797 \
+           --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
+           --language python
+
 ⚠️ 注意事项：
-  1. 需提前安装golangci-lint（可选，未安装则跳过规则检查）
-  2. 百炼API Key需具备文本生成权限
-  3. 云效Token需具备Codeup MR/Commit评论权限
-  4. 仅评审新增/修改的.go文件，二进制文件、删除/重命名文件会被过滤
+  1. Golang需提前安装golangci-lint（可选，未安装则跳过规则检查）
+  2. Java需提前安装checkstyle（可选，未安装则跳过规则检查）
+  3. Python需提前安装flake8（可选，未安装则跳过规则检查）
+  4. 百炼API Key需具备文本生成权限
+  5. 云效Token需具备Codeup MR/Commit评论权限
+  6. 仅评审新增/修改的对应语言文件，二进制文件、删除/重命名文件会被过滤
 `
 	fmt.Println(usage)
 }
@@ -515,6 +822,7 @@ func main() {
 	flag.StringVar(&config.ReviewLevel, "level", LevelBlock, "评审等级（block/high/medium/suggest）")
 	flag.StringVar(&config.CommentTarget, "comment-target", "", "评论目标：mr（评论MR）/commit（评论Commit）/空（不评论）")
 	flag.StringVar(&config.CommitID, "commit-id", "", "评论Commit时的commit hash（comment-target=commit时必填）")
+	flag.StringVar(&config.Language, "language", "golang", "评审语言：golang/java/python（默认golang）")
 	flag.Parse()
 
 	if len(os.Args) == 2 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
@@ -559,22 +867,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 根据语言获取对应的评审流程
+	reviewProcess := GetReviewProcess(config.Language)
+	fmt.Printf("ℹ️【airvw】使用%s语言评审流程\n", config.Language)
+
 	// 步骤1：拉取MR变更代码
-	diffFiles, err := GetMRDiff(config)
+	diffFiles, err := GetMRDiff(config, reviewProcess)
 	if err != nil {
 		fmt.Printf("❌【airvw】拉取MR变更失败：%s\n", err)
 		os.Exit(1)
 	}
 	if len(diffFiles) == 0 {
-		fmt.Println("✅【airvw】无变更的Go文件，评审通过")
+		fmt.Printf("✅【airvw】无变更的%s文件，评审通过\n", reviewProcess.GetFileExtension())
 		os.Exit(0)
 	}
 
-	// 步骤2：执行golangci-lint规则检查
-	lintResults := RunGolangciLint(".", diffFiles)
+	// 步骤2：执行代码静态检查
+	lintResults := reviewProcess.RunLint(".", diffFiles)
 
 	// 步骤3：AI代码评审
-	aiResult, blockIssues, highIssues, err := AICodeReview(config, diffFiles, lintResults)
+	aiResult, blockIssues, highIssues, err := AICodeReview(config, diffFiles, lintResults, reviewProcess)
 	if err != nil {
 		fmt.Printf("❌【airvw】AI评审失败：%s\n", err)
 		os.Exit(1)
