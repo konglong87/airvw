@@ -31,7 +31,7 @@ type Config struct {
 	ReviewLevel    string // 评审等级，默认block
 	CommentTarget  string // 评论目标：mr（默认）/commit/空（不评论）
 	CommitID       string // 评论Commit时的commit hash（comment-target=commit时必填）
-	Language       string // 评审语言：golang/java/python（默认golang）
+	Language       string // 评审语言：golang/java/python/javascript（默认golang）
 }
 
 // DiffItem 对应接口返回的diffs数组元素
@@ -281,6 +281,13 @@ func (p *PythonReviewProcess) GetFileExtension() string {
 	return ".py"
 }
 
+// JavaScriptReviewProcess JavaScript语言的评审流程实现
+type JavaScriptReviewProcess struct{}
+
+func (j *JavaScriptReviewProcess) GetFileExtension() string {
+	return ".js"
+}
+
 func (p *PythonReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
 	var reviewContent string
 	for file, content := range diffFiles {
@@ -291,6 +298,26 @@ func (p *PythonReviewProcess) GetPrompt(diffFiles map[string]string, lintResults
 	return fmt.Sprintf(`
 你是资深Python工程师，仅评审Codeup MR中新增/修改的Python代码，严格按以下要求输出：
 1. 评审维度：异常处理、代码规范(PEP8)、逻辑漏洞、性能问题、资源泄漏、类型注解、导入管理、文档字符串；
+2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
+3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
+4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
+5. 若无问题，仅输出「✅ 未发现任何问题」。
+
+待评审的MR变更代码-
+---------------------
+%s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
+}
+
+func (j *JavaScriptReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
+	var reviewContent string
+	for file, content := range diffFiles {
+		reviewContent += fmt.Sprintf("=== 文件：%s ===\n规则检查结果：%s\n代码变更内容：\n%s\n\n",
+			file, lintResults[file], content)
+	}
+
+	return fmt.Sprintf(`
+你是资深JavaScript工程师，仅评审Codeup MR中新增/修改的JavaScript代码，严格按以下要求输出：
+1. 评审维度：异步编程、错误处理、代码规范(ESLint)、逻辑漏洞、性能问题、内存泄漏、DOM操作、事件处理、跨浏览器兼容性；
 2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
 3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
 4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
@@ -378,6 +405,47 @@ func (p *PythonReviewProcess) FilterFiles(diffItems []DiffItem) map[string]strin
 	return diffMap
 }
 
+func (j *JavaScriptReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
+	fmt.Println("\n=====================================")
+	fmt.Println("【RunJavaScriptLint】开始执行")
+	fmt.Printf("  - 仓库路径：%s\n", repoPath)
+	fmt.Printf("  - 待检查文件数：%d\n", len(diffFiles))
+	fmt.Println("=====================================")
+
+	lintResults := make(map[string]string)
+
+	// 检查是否安装了ESLint
+	if _, err := exec.LookPath("eslint"); err != nil {
+		fmt.Println("⚠️【RunJavaScriptLint】未检测到eslint，跳过规则检查")
+		for file := range diffFiles {
+			lintResults[file] = "【规则检查】未执行：缺少eslint环境"
+		}
+		return lintResults
+	}
+
+	for file := range diffFiles {
+		fmt.Printf("ℹ️【RunJavaScriptLint】检查文件：%s\n", file)
+		cmd := exec.Command("eslint", file)
+		output, err := cmd.CombinedOutput()
+
+		if err != nil {
+			fmt.Printf("⚠️【RunJavaScriptLint】文件%s检查失败：%v\n", file, err)
+			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
+			continue
+		}
+
+		if string(output) == "" {
+			fmt.Printf("✅【RunJavaScriptLint】文件%s未发现违规问题\n", file)
+			lintResults[file] = "【规则检查】未发现违规问题"
+		} else {
+			fmt.Printf("⚠️【RunJavaScriptLint】文件%s发现违规问题：%s\n", file, string(output))
+			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
+		}
+	}
+
+	return lintResults
+}
+
 // GetReviewProcess 根据语言获取对应的评审流程实现
 func GetReviewProcess(language string) ReviewProcess {
 	switch strings.ToLower(language) {
@@ -385,11 +453,49 @@ func GetReviewProcess(language string) ReviewProcess {
 		return &JavaReviewProcess{}
 	case "python":
 		return &PythonReviewProcess{}
+	case "javascript", "js":
+		return &JavaScriptReviewProcess{}
 	case "golang", "go", "":
 		fallthrough
 	default:
 		return &GolangReviewProcess{}
 	}
+}
+
+func (j *JavaScriptReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string {
+	diffMap := make(map[string]string)
+	for _, diffItem := range diffItems {
+		// 跳过二进制文件
+		if diffItem.Binary {
+			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			continue
+		}
+
+		// 确定文件路径（兼容重命名/删除场景）
+		filePath := diffItem.NewPath
+		if filePath == "" {
+			filePath = diffItem.OldPath
+		}
+
+		// 确定文件状态
+		var status string
+		if diffItem.NewFile {
+			status = "added"
+		} else if diffItem.DeletedFile {
+			status = "removed"
+		} else if diffItem.RenamedFile {
+			status = "renamed"
+		} else {
+			status = "modified"
+		}
+
+		// 仅保留新增/修改的JavaScript文件
+		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".js") {
+			diffMap[filePath] = diffItem.Diff
+			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+		}
+	}
+	return diffMap
 }
 
 func maskSensitive(str string) string {
@@ -742,7 +848,7 @@ func printUsage() {
 =====================***=======================
 功能：自动拉取Codeup MR/Commit的代码变更，执行静态检查，调用阿里云百炼AI评审，
       支持将评审结果评论到MR/Commit，阻断级问题直接终止流程。
-      支持多种编程语言：Golang/Java/Python
+      支持多种编程语言：Golang/Java/Python/JavaScript
 
 📦 安装方式：
   go install github.com/konglong87/airvw@latest
@@ -765,7 +871,7 @@ func printUsage() {
     --comment-target string   评论目标（可选：mr/commit/空，空则不评论）
     --mr-id int               MR的ID（comment-target=mr时必填）
     --commit-id string        Commit的hash（comment-target=commit时必填）
-    --language string         评审语言（默认：golang，可选：golang/java/python）
+    --language string         评审语言（默认：golang，可选：golang/java/python/javascript）
     --help                    显示此帮助信息
 
 💡 使用示例：
@@ -798,6 +904,7 @@ func printUsage() {
   1. Golang需提前安装golangci-lint（可选，未安装则跳过规则检查）
   2. Java需提前安装checkstyle（可选，未安装则跳过规则检查）
   3. Python需提前安装flake8（可选，未安装则跳过规则检查）
+   4. JavaScript需提前安装eslint（可选，未安装则跳过规则检查）
   4. 百炼API Key需具备文本生成权限
   5. 云效Token需具备Codeup MR/Commit评论权限
   6. 仅评审新增/修改的对应语言文件，二进制文件、删除/重命名文件会被过滤
