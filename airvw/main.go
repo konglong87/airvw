@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/go-resty/resty/v2"
@@ -32,6 +33,7 @@ type Config struct {
 	CommentTarget  string // 评论目标：mr（默认）/commit/空（不评论）
 	CommitID       string // 评论Commit时的commit hash（comment-target=commit时必填）
 	Language       string // 评审语言：golang/java/python/javascript（默认golang）
+	Debug          bool   // 是否开启调试模式，默认false
 }
 
 // DiffItem 对应接口返回的diffs数组元素
@@ -53,6 +55,78 @@ type CompareResponse struct {
 }
 
 var client = resty.New()
+var debugMode = false // 全局调试模式标志
+
+// logDebug 仅在debug模式下输出日志
+func logDebug(format string, args ...interface{}) {
+	if debugMode {
+		fmt.Printf(format, args...)
+	}
+}
+
+// logDebugln 仅在debug模式下输出日志（带换行）
+func logDebugln(args ...interface{}) {
+	if debugMode {
+		fmt.Println(args...)
+	}
+}
+
+// BlockIssue 阻断问题结构体
+type BlockIssue struct {
+	Level      string `json:"level"`      // 问题等级
+	File       string `json:"file"`       // 文件名
+	Line       string `json:"line"`       // 行号
+	Issue      string `json:"issue"`      // 问题描述
+	Suggestion string `json:"suggestion"` // 修复建议
+}
+
+// ReviewResult 评审结果结构体
+type ReviewResult struct {
+	Status      string       `json:"status"`                 // 状态: success/blocked
+	TotalIssues int          `json:"total_issues"`           // 总问题数
+	BlockReason string       `json:"block_reason,omitempty"` // 阻断原因
+	BlockIssues []BlockIssue `json:"block_issues,omitempty"` // 阻断问题列表
+	Message     string       `json:"message"`                // 消息
+}
+
+// formatBlockIssues 将问题字符串转换为结构化的BlockIssue
+func formatBlockIssues(issues []string) []BlockIssue {
+	var blockIssues []BlockIssue
+	for _, issue := range issues {
+		// 解析格式: [等级] 文件名:行号 - 问题描述 - 修复建议
+		re := regexp.MustCompile(`\[([^\]]+)\]\s+([^:]+):(\d+)\s+-\s+([^\-]+)\s+-\s+(.+)`)
+		matches := re.FindStringSubmatch(issue)
+		if len(matches) == 6 {
+			blockIssues = append(blockIssues, BlockIssue{
+				Level:      matches[1],
+				File:       matches[2],
+				Line:       matches[3],
+				Issue:      strings.TrimSpace(matches[4]),
+				Suggestion: strings.TrimSpace(matches[5]),
+			})
+		} else {
+			// 如果无法解析，则将整个字符串作为问题描述
+			blockIssues = append(blockIssues, BlockIssue{
+				Level:      "unknown",
+				File:       "unknown",
+				Line:       "0",
+				Issue:      issue,
+				Suggestion: "",
+			})
+		}
+	}
+	return blockIssues
+}
+
+// printJSONResult 以JSON格式输出评审结果
+func printJSONResult(result ReviewResult) {
+	jsonData, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		fmt.Printf("❌【airvw】JSON格式化失败：%s\n", err)
+		return
+	}
+	fmt.Println(string(jsonData))
+}
 
 // ReviewProcess 代码评审流程接口
 type ReviewProcess interface {
@@ -94,16 +168,16 @@ func (g *GolangReviewProcess) GetPrompt(diffFiles map[string]string, lintResults
 }
 
 func (g *GolangReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
-	fmt.Println("\n=====================================")
-	fmt.Println("【RunGolangciLint】开始执行")
-	fmt.Printf("  - 仓库路径：%s\n", repoPath)
-	fmt.Printf("  - 待检查文件数：%d\n", len(diffFiles))
-	fmt.Println("=====================================")
+	logDebugln("\n=====================================")
+	logDebugln("【RunGolangciLint】开始执行")
+	logDebug("  - 仓库路径：%s\n", repoPath)
+	logDebug("  - 待检查文件数：%d\n", len(diffFiles))
+	logDebugln("=====================================")
 
 	lintResults := make(map[string]string)
 
 	if _, err := exec.LookPath("golangci-lint"); err != nil {
-		fmt.Println("⚠️【RunGolangciLint】未检测到golangci-lint，跳过规则检查")
+		logDebugln("⚠️【RunGolangciLint】未检测到golangci-lint，跳过规则检查")
 		for file := range diffFiles {
 			lintResults[file] = "【规则检查】未执行：缺少golangci-lint环境"
 		}
@@ -111,22 +185,22 @@ func (g *GolangReviewProcess) RunLint(repoPath string, diffFiles map[string]stri
 	}
 
 	for file := range diffFiles {
-		fmt.Printf("ℹ️【RunGolangciLint】检查文件：%s\n", file)
+		logDebug("ℹ️【RunGolangciLint】检查文件：%s\n", file)
 		cmd := exec.Command("bash", "-c",
 			fmt.Sprintf("cd %s && golangci-lint run --new-from-rev=origin/main %s", repoPath, file))
 		output, err := cmd.CombinedOutput()
 
 		if err != nil {
-			fmt.Printf("⚠️【RunGolangciLint】文件%s检查失败：%v\n", file, err)
+			logDebug("⚠️【RunGolangciLint】文件%s检查失败：%v\n", file, err)
 			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
 			continue
 		}
 
 		if string(output) == "" {
-			fmt.Printf("✅【RunGolangciLint】文件%s未发现违规问题\n", file)
+			logDebug("✅【RunGolangciLint】文件%s未发现违规问题\n", file)
 			lintResults[file] = "【规则检查】未发现违规问题"
 		} else {
-			fmt.Printf("⚠️【RunGolangciLint】文件%s发现违规问题：%s\n", file, string(output))
+			logDebug("⚠️【RunGolangciLint】文件%s发现违规问题：%s\n", file, string(output))
 			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
 		}
 	}
@@ -139,7 +213,7 @@ func (g *GolangReviewProcess) FilterFiles(diffItems []DiffItem) map[string]strin
 	for _, diffItem := range diffItems {
 		// 跳过二进制文件
 		if diffItem.Binary {
-			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			logDebug("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
 			continue
 		}
 
@@ -164,7 +238,7 @@ func (g *GolangReviewProcess) FilterFiles(diffItems []DiffItem) map[string]strin
 		// 仅保留新增/修改的Go文件
 		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".go") {
 			diffMap[filePath] = diffItem.Diff
-			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
 		}
 	}
 	return diffMap
@@ -243,7 +317,7 @@ func (j *JavaReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string 
 	for _, diffItem := range diffItems {
 		// 跳过二进制文件
 		if diffItem.Binary {
-			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			logDebug("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
 			continue
 		}
 
@@ -268,7 +342,7 @@ func (j *JavaReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string 
 		// 仅保留新增/修改的Java文件
 		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".java") {
 			diffMap[filePath] = diffItem.Diff
-			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
 		}
 	}
 	return diffMap
@@ -329,17 +403,17 @@ func (j *JavaScriptReviewProcess) GetPrompt(diffFiles map[string]string, lintRes
 }
 
 func (p *PythonReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
-	fmt.Println("\n=====================================")
-	fmt.Println("【RunPythonLint】开始执行")
-	fmt.Printf("  - 仓库路径：%s\n", repoPath)
-	fmt.Printf("  - 待检查文件数：%d\n", len(diffFiles))
-	fmt.Println("=====================================")
+	logDebugln("\n=====================================")
+	logDebugln("【RunPythonLint】开始执行")
+	logDebug("  - 仓库路径：%s\n", repoPath)
+	logDebug("  - 待检查文件数：%d\n", len(diffFiles))
+	logDebugln("=====================================")
 
 	lintResults := make(map[string]string)
 
 	// 检查是否安装了flake8
 	if _, err := exec.LookPath("flake8"); err != nil {
-		fmt.Println("⚠️【RunPythonLint】未检测到flake8，跳过规则检查")
+		logDebugln("⚠️【RunPythonLint】未检测到flake8，跳过规则检查")
 		for file := range diffFiles {
 			lintResults[file] = "【规则检查】未执行：缺少flake8环境"
 		}
@@ -347,21 +421,21 @@ func (p *PythonReviewProcess) RunLint(repoPath string, diffFiles map[string]stri
 	}
 
 	for file := range diffFiles {
-		fmt.Printf("ℹ️【RunPythonLint】检查文件：%s\n", file)
+		logDebug("ℹ️【RunPythonLint】检查文件：%s\n", file)
 		cmd := exec.Command("flake8", file)
 		output, err := cmd.CombinedOutput()
 
 		if err != nil {
-			fmt.Printf("⚠️【RunPythonLint】文件%s检查失败：%v\n", file, err)
+			logDebug("⚠️【RunPythonLint】文件%s检查失败：%v\n", file, err)
 			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
 			continue
 		}
 
 		if string(output) == "" {
-			fmt.Printf("✅【RunPythonLint】文件%s未发现违规问题\n", file)
+			logDebug("✅【RunPythonLint】文件%s未发现违规问题\n", file)
 			lintResults[file] = "【规则检查】未发现违规问题"
 		} else {
-			fmt.Printf("⚠️【RunPythonLint】文件%s发现违规问题：%s\n", file, string(output))
+			logDebug("⚠️【RunPythonLint】文件%s发现违规问题：%s\n", file, string(output))
 			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
 		}
 	}
@@ -374,7 +448,7 @@ func (p *PythonReviewProcess) FilterFiles(diffItems []DiffItem) map[string]strin
 	for _, diffItem := range diffItems {
 		// 跳过二进制文件
 		if diffItem.Binary {
-			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			logDebug("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
 			continue
 		}
 
@@ -399,7 +473,7 @@ func (p *PythonReviewProcess) FilterFiles(diffItems []DiffItem) map[string]strin
 		// 仅保留新增/修改的Python文件
 		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".py") {
 			diffMap[filePath] = diffItem.Diff
-			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
 		}
 	}
 	return diffMap
@@ -467,7 +541,7 @@ func (j *JavaScriptReviewProcess) FilterFiles(diffItems []DiffItem) map[string]s
 	for _, diffItem := range diffItems {
 		// 跳过二进制文件
 		if diffItem.Binary {
-			fmt.Printf("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			logDebug("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
 			continue
 		}
 
@@ -492,7 +566,7 @@ func (j *JavaScriptReviewProcess) FilterFiles(diffItems []DiffItem) map[string]s
 		// 仅保留新增/修改的JavaScript文件
 		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".js") {
 			diffMap[filePath] = diffItem.Diff
-			fmt.Printf("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
 		}
 	}
 	return diffMap
@@ -507,24 +581,23 @@ func maskSensitive(str string) string {
 
 // 1. 拉取MR变更代码
 func GetMRDiff(config Config, process ReviewProcess) (map[string]string, error) {
-	fmt.Println("=====================================")
-	fmt.Println("【GetMRDiff】开始执行，配置详情：")
-	fmt.Printf("  - YunxiaoToken: %s\n", maskSensitive(config.YunxiaoToken))
-	fmt.Printf("  - OrgID: %s\n", config.OrgID)
-	fmt.Printf("  - RepoID: %d\n", config.RepoID)
-	fmt.Printf("  - MRID: %d\n", config.MRID)
-	fmt.Printf("  - FromCommit: %s\n", config.FromCommit)
-	fmt.Printf("  - ToCommit: %s\n", config.ToCommit)
-	fmt.Printf("  - CodeupDomain: %s\n", config.CodeupDomain)
-	fmt.Printf("  - BaichuanAPIKey: %s\n", maskSensitive(config.BaichuanAPIKey))
-	fmt.Printf("  - ReviewLevel: %s\n", config.ReviewLevel)
-	fmt.Printf("  - CommentTarget: %s\n", config.CommentTarget)
-	fmt.Printf("  - CommitID: %s\n", config.CommitID)
-	fmt.Println("=====================================")
+	logDebugln("=====================================")
+	logDebugln("【GetMRDiff】开始执行，配置详情：")
+	logDebug("  - YunxiaoToken: %s\n", maskSensitive(config.YunxiaoToken))
+	logDebug("  - OrgID: %s\n", config.OrgID)
+	logDebug("  - RepoID: %d\n", config.RepoID)
+	logDebug("  - MRID: %d\n", config.MRID)
+	logDebug("  - FromCommit: %s\n", config.FromCommit)
+	logDebug("  - ToCommit: %s\n", config.ToCommit)
+	logDebug("  - CodeupDomain: %s\n", config.CodeupDomain)
+	logDebug("  - BaichuanAPIKey: %s\n", maskSensitive(config.BaichuanAPIKey))
+	logDebug("  - ReviewLevel: %s\n", config.ReviewLevel)
+	logDebug("  - CommentTarget: %s\n", config.CommentTarget)
+	logDebug("  - CommitID: %s\n", config.CommitID)
+	logDebugln("=====================================")
 
-	fmt.Println("🔍 开始拉取MR变更代码（云效OpenAPI）...")
+	logDebugln("🔍 开始拉取MR变更代码（云效OpenAPI）...")
 
-	// 构建请求：核心修正 - 域名/Header/路径/参数
 	resp, err := client.R().
 		SetHeader("x-yunxiao-token", config.YunxiaoToken).
 		SetHeader("Accept", "application/json").
@@ -532,51 +605,49 @@ func GetMRDiff(config Config, process ReviewProcess) (map[string]string, error) 
 			"from": config.FromCommit, // from为提交ID
 			"to":   config.ToCommit,   // to为提交ID
 		}).
-		// API路径（组织ID/仓库ID）
 		Get(fmt.Sprintf("https://%s/oapi/v1/codeup/organizations/%s/repositories/%d/compares",
 			config.CodeupDomain, config.OrgID, config.RepoID))
 
 	if err != nil {
-		fmt.Printf("❌【GetMRDiff】云效OpenAPI请求失败：%v\n", err)
+		logDebug("❌【GetMRDiff】云效OpenAPI请求失败：%v\n", err)
 		return nil, fmt.Errorf("云效OpenAPI请求失败：%w", err)
 	}
 	if resp.StatusCode() != 200 {
-		fmt.Printf("❌【GetMRDiff】云效OpenAPI返回异常状态码：%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
+		logDebug("❌【GetMRDiff】云效OpenAPI返回异常状态码：%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
 		return nil, fmt.Errorf("云效OpenAPI返回异常状态码：%d，响应内容：%s",
 			resp.StatusCode(), string(resp.Body()))
 	}
 
 	var compareResp CompareResponse
 	if err := json.Unmarshal(resp.Body(), &compareResp); err != nil {
-		fmt.Printf("❌【GetMRDiff】解析云效OpenAPI响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
+		logDebug("❌【GetMRDiff】解析云效OpenAPI响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
 		return nil, fmt.Errorf("解析云效OpenAPI响应失败：%w，响应内容：%s", err, string(resp.Body()))
 	}
 
-	fmt.Printf("✅【GetMRDiff】成功拉取响应，共检测到%d个变更文件\n", len(compareResp.Diffs))
+	logDebug("✅【GetMRDiff】成功拉取响应，共检测到%d个变更文件\n", len(compareResp.Diffs))
 
-	// 使用ReviewProcess接口过滤文件
 	diffMap := process.FilterFiles(compareResp.Diffs)
 
 	if len(diffMap) == 0 {
-		fmt.Printf("ℹ️【GetMRDiff】未检测到新增/修改的%s文件，无需评审\n", process.GetFileExtension())
+		logDebug("ℹ️【GetMRDiff】未检测到新增/修改的%s文件，无需评审\n", process.GetFileExtension())
 		return diffMap, nil
 	}
-	fmt.Printf("📌【GetMRDiff】共筛选出%d个需评审的%s文件\n", len(diffMap), process.GetFileExtension())
+	logDebug("📌【GetMRDiff】共筛选出%d个需评审的%s文件\n", len(diffMap), process.GetFileExtension())
 	return diffMap, nil
 }
 
-// 2. 执行golangci-lint规则检查（增加日志）
+// 2. 执行golangci-lint规则检查
 func RunGolangciLint(repoPath string, diffFiles map[string]string) map[string]string {
-	fmt.Println("\n=====================================")
-	fmt.Println("【RunGolangciLint】开始执行")
-	fmt.Printf("  - 仓库路径：%s\n", repoPath)
-	fmt.Printf("  - 待检查文件数：%d\n", len(diffFiles))
-	fmt.Println("=====================================")
+	logDebugln("\n=====================================")
+	logDebugln("【RunGolangciLint】开始执行")
+	logDebug("  - 仓库路径：%s\n", repoPath)
+	logDebug("  - 待检查文件数：%d\n", len(diffFiles))
+	logDebugln("=====================================")
 
 	lintResults := make(map[string]string)
 
 	if _, err := exec.LookPath("golangci-lint"); err != nil {
-		fmt.Println("⚠️【RunGolangciLint】未检测到golangci-lint，跳过规则检查")
+		logDebugln("⚠️【RunGolangciLint】未检测到golangci-lint，跳过规则检查")
 		for file := range diffFiles {
 			lintResults[file] = "【规则检查】未执行：缺少golangci-lint环境"
 		}
@@ -584,22 +655,22 @@ func RunGolangciLint(repoPath string, diffFiles map[string]string) map[string]st
 	}
 
 	for file := range diffFiles {
-		fmt.Printf("ℹ️【RunGolangciLint】检查文件：%s\n", file)
+		logDebug("ℹ️【RunGolangciLint】检查文件：%s\n", file)
 		cmd := exec.Command("bash", "-c",
 			fmt.Sprintf("cd %s && golangci-lint run --new-from-rev=origin/main %s", repoPath, file))
 		output, err := cmd.CombinedOutput()
 
 		if err != nil {
-			fmt.Printf("⚠️【RunGolangciLint】文件%s检查失败：%v\n", file, err)
+			logDebug("⚠️【RunGolangciLint】文件%s检查失败：%v\n", file, err)
 			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
 			continue
 		}
 
 		if string(output) == "" {
-			fmt.Printf("✅【RunGolangciLint】文件%s未发现违规问题\n", file)
+			logDebug("✅【RunGolangciLint】文件%s未发现违规问题\n", file)
 			lintResults[file] = "【规则检查】未发现违规问题"
 		} else {
-			fmt.Printf("⚠️【RunGolangciLint】文件%s发现违规问题：%s\n", file, string(output))
+			logDebug("⚠️【RunGolangciLint】文件%s发现违规问题：%s\n", file, string(output))
 			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
 		}
 	}
@@ -607,12 +678,12 @@ func RunGolangciLint(repoPath string, diffFiles map[string]string) map[string]st
 	return lintResults
 }
 
-// 3. 调用阿里云百炼API进行AI代码评审（修复JSON格式 + 新增请求体日志）
+// 3. 调用阿里云百炼API进行AI代码评审
 func AICodeReview(config Config, diffFiles map[string]string, lintResults map[string]string, process ReviewProcess) (string, []string, []string, error) {
-	fmt.Println("\n=====================================")
-	fmt.Println("【AICodeReview】开始执行")
-	fmt.Printf("  - 待评审文件数：%d\n", len(diffFiles))
-	fmt.Println("=====================================")
+	logDebugln("\n=====================================")
+	logDebugln("【AICodeReview】开始执行")
+	logDebug("  - 待评审文件数：%d\n", len(diffFiles))
+	logDebugln("=====================================")
 
 	// 使用ReviewProcess接口获取prompt
 	prompt := process.GetPrompt(diffFiles, lintResults)
@@ -628,7 +699,7 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 			},
 		},
 		"parameters": map[string]interface{}{
-			"max_new_tokens": 4095,
+			"max_new_tokens": 9999,
 			"temperature":    0.2,
 			"top_p":          0.9,
 		},
@@ -636,12 +707,12 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 
 	requestBodyJSON, err := json.MarshalIndent(requestBody, "", "  ")
 	if err != nil {
-		fmt.Printf("❌【AICodeReview】构造请求体JSON失败：%v\n", err)
+		logDebug("❌【AICodeReview】构造请求体JSON失败：%v\n", err)
 		return "", nil, nil, fmt.Errorf("构造请求体JSON失败：%w", err)
 	}
-	fmt.Printf("ℹ️【AICodeReview】构造的请求体：\n%s\n", string(requestBodyJSON))
+	logDebug("ℹ️【AICodeReview】构造的请求体：\n%s\n", string(requestBodyJSON))
 
-	fmt.Println("ℹ️【AICodeReview】开始调用百炼原生API...")
+	logDebugln("ℹ️【AICodeReview】开始调用百炼原生API...")
 	resp, err := client.R().
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", fmt.Sprintf("Bearer %s", config.BaichuanAPIKey)).
@@ -649,12 +720,12 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 		Post("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation")
 
 	if err != nil {
-		fmt.Printf("❌【AICodeReview】百炼API调用失败：%v\n", err)
+		logDebug("❌【AICodeReview】百炼API调用失败：%v\n", err)
 		return "", nil, nil, fmt.Errorf("百炼API调用失败：%w", err)
 	}
 
-	fmt.Printf("ℹ️【AICodeReview】百炼API响应状态码：%d\n", resp.StatusCode())
-	fmt.Printf("ℹ️【AICodeReview】百炼API响应内容：%s\n", string(resp.Body()))
+	logDebug("ℹ️【AICodeReview】百炼API响应状态码：%d\n", resp.StatusCode())
+	logDebug("ℹ️【AICodeReview】百炼API响应内容：%s\n", string(resp.Body()))
 
 	var aiResp struct {
 		Output struct {
@@ -676,12 +747,12 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 		Message   string `json:"message"`
 	}
 	if err := json.Unmarshal(resp.Body(), &aiResp); err != nil {
-		fmt.Printf("❌【AICodeReview】解析百炼API响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
+		logDebug("❌【AICodeReview】解析百炼API响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
 		return "", nil, nil, fmt.Errorf("解析百炼API响应失败：%w，响应内容：%s", err, string(resp.Body()))
 	}
 
 	if aiResp.Code != "" {
-		fmt.Printf("❌【AICodeReview】百炼API返回业务错误：code=%s, message=%s\n", aiResp.Code, aiResp.Message)
+		logDebug("❌【AICodeReview】百炼API返回业务错误：code=%s, message=%s\n", aiResp.Code, aiResp.Message)
 		return "", nil, nil, fmt.Errorf("百炼API业务错误：%s - %s", aiResp.Code, aiResp.Message)
 	}
 
@@ -689,10 +760,10 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	if len(aiResp.Output.Choices) > 0 {
 		aiResult = strings.TrimSpace(aiResp.Output.Choices[0].Message.Content)
 	}
-	fmt.Printf("✅【AICodeReview】百炼API调用成功，RequestID：%s\n", aiResp.RequestID)
-	fmt.Printf("ℹ️【AICodeReview】Token使用情况：Total=%d, Input=%d, Output=%d\n",
+	logDebug("✅【AICodeReview】百炼API调用成功，RequestID：%s\n", aiResp.RequestID)
+	logDebug("ℹ️【AICodeReview】Token使用情况：Total=%d, Input=%d, Output=%d\n",
 		aiResp.Usage.TotalTokens, aiResp.Usage.InputTokens, aiResp.Usage.OutputTokens)
-	fmt.Printf("ℹ️【AICodeReview】AI评审结果：%s\n", aiResult)
+	logDebug("ℹ️【AICodeReview】AI评审结果：%s\n", aiResult)
 
 	// 提取阻断级和高级别问题
 	var blockIssues []string
@@ -706,28 +777,43 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 			}
 			if strings.Contains(line, fmt.Sprintf("[%s]", LevelBlock)) {
 				blockIssues = append(blockIssues, line)
-				fmt.Printf("❌【AICodeReview】检测到阻断级问题：%s\n", line)
+				logDebug("❌【AICodeReview】检测到阻断级问题：%s\n", line)
 			} else if strings.Contains(line, fmt.Sprintf("[%s]", LevelHigh)) {
 				highIssues = append(highIssues, line)
-				fmt.Printf("⚠️【AICodeReview】检测到高级别问题：%s\n", line)
+				logDebug("⚠️【AICodeReview】检测到高级别问题：%s\n", line)
 			}
 		}
 	}
 
-	fmt.Printf("📊【AICodeReview】AI评审完成，检测到%d个阻断级问题，%d个高级别问题.\n", len(blockIssues), len(highIssues))
+	logDebug("📊【AICodeReview】AI评审完成，检测到%d个阻断级问题，%d个高级别问题.\n", len(blockIssues), len(highIssues))
 	return aiResult, blockIssues, highIssues, nil
 }
 
 // 4. 将评审结果评论到Codeup MR
 func CommentMR(config Config, reviewResult string) error {
-	fmt.Println("\n=====================================")
-	fmt.Println("【CommentMR】开始执行")
-	fmt.Printf("  - MRID：%d\n", config.MRID)
-	fmt.Println("=====================================")
+	logDebugln("\n=====================================")
+	logDebugln("【CommentMR】开始执行")
+	logDebug("  - MRID：%d\n", config.MRID)
+	logDebugln("=====================================")
+
+	// 根据语言类型获取对应的文件扩展名描述
+	var langDesc string
+	switch config.Language {
+	case "java":
+		langDesc = "Java"
+	case "python":
+		langDesc = "Python"
+	case "javascript", "js":
+		langDesc = "JavaScript"
+	case "golang", "go", "":
+		fallthrough
+	default:
+		langDesc = "Go"
+	}
 
 	commentBody := fmt.Sprintf(`
 ### 🤖 AI Code Review 结果（MR #%d）
-#### 评审范围：提交ID %s → %s 变更的Go文件
+#### 评审范围：提交ID %s → %s 变更的%s文件
 #### 问题等级说明：
 - [%s]：阻断级，必须修复才能合并
 - [%s]：高风险，建议优先修复
@@ -735,7 +821,7 @@ func CommentMR(config Config, reviewResult string) error {
 - [%s]：优化建议，不强制
 
 ---
-%s`, config.MRID, config.FromCommit, config.ToCommit,
+%s`, config.MRID, config.FromCommit, config.ToCommit, langDesc,
 		LevelBlock, LevelHigh, LevelMedium, LevelSuggest, reviewResult)
 
 	resp, err := client.R().
@@ -750,20 +836,20 @@ func CommentMR(config Config, reviewResult string) error {
 			config.CodeupDomain, config.MRID))
 
 	if err != nil {
-		fmt.Printf("❌【CommentMR】创建MR评论API调用失败：%v\n", err)
+		logDebug("❌【CommentMR】创建MR评论API调用失败：%v\n", err)
 		return fmt.Errorf("创建MR评论API调用失败：%w", err)
 	}
 
 	if resp.StatusCode() != 200 && resp.StatusCode() != 201 {
-		fmt.Printf("❌【CommentMR】创建MR评论失败：状态码%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
+		logDebug("❌【CommentMR】创建MR评论失败：状态码%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
 		return fmt.Errorf("创建MR评论失败：状态码%d，响应内容：%s", resp.StatusCode(), string(resp.Body()))
 	}
 
 	var commentResp map[string]interface{}
 	if err := json.Unmarshal(resp.Body(), &commentResp); err != nil {
-		fmt.Printf("⚠️【CommentMR】解析MR评论响应失败（但评论已提交）：%s\n", err)
+		logDebug("⚠️【CommentMR】解析MR评论响应失败（但评论已提交）：%s\n", err)
 	} else {
-		fmt.Printf("✅【CommentMR】评审结果评论成功，评论ID：%v\n", commentResp["id"])
+		logDebug("✅【CommentMR】评审结果评论成功，评论ID：%v\n", commentResp["id"])
 	}
 
 	return nil
@@ -771,21 +857,36 @@ func CommentMR(config Config, reviewResult string) error {
 
 // 5. 将评审结果评论到Codeup Commit
 func CommentCommit(config Config, reviewResult string) error {
-	fmt.Println("\n=====================================")
-	fmt.Println("【CommentCommit】开始执行")
-	fmt.Printf("  - OrgID：%s\n", config.OrgID)
-	fmt.Printf("  - RepoID：%d\n", config.RepoID)
-	fmt.Printf("  - CommitID：%s\n", config.CommitID)
-	fmt.Printf("  - reviewResult：%s\n", reviewResult)
-	fmt.Println("=====================================")
+	logDebugln("\n=====================================")
+	logDebugln("【CommentCommit】开始执行")
+	logDebug("  - OrgID：%s\n", config.OrgID)
+	logDebug("  - RepoID：%d\n", config.RepoID)
+	logDebug("  - CommitID：%s\n", config.CommitID)
+	logDebug("  - reviewResult：%s\n", reviewResult)
+	logDebugln("=====================================")
 
 	if reviewResult == "" {
-		fmt.Println("ℹ️【CommentCommit】AI评审结果为空，跳过评论提交")
+		logDebugln("ℹ️【CommentCommit】AI评审结果为空，跳过评论提交")
 		return nil
 	}
+	// 根据语言类型获取对应的文件扩展名描述
+	var langDesc string
+	switch config.Language {
+	case "java":
+		langDesc = "Java"
+	case "python":
+		langDesc = "Python"
+	case "javascript", "js":
+		langDesc = "JavaScript"
+	case "golang", "go", "":
+		fallthrough
+	default:
+		langDesc = "Go"
+	}
+
 	commentBody := fmt.Sprintf(`
 ### 🤖 AI Code Review 结果（Commit %s）
-#### 评审范围：提交ID %s → %s 变更的Go文件
+#### 评审范围：提交ID %s → %s 变更的%s文件
 #### 问题等级说明：
 - [%s]：阻断级，必须修复
 - [%s]：高风险，建议优先修复
@@ -793,7 +894,7 @@ func CommentCommit(config Config, reviewResult string) error {
 - [%s]：优化建议，不强制
 
 ---
-%s`, config.CommitID, config.FromCommit, config.ToCommit,
+%s`, config.CommitID, config.FromCommit, config.ToCommit, langDesc,
 		LevelBlock, LevelHigh, LevelMedium, LevelSuggest, reviewResult)
 
 	resp, err := client.R().
@@ -807,44 +908,43 @@ func CommentCommit(config Config, reviewResult string) error {
 			config.CodeupDomain, config.OrgID, config.RepoID, config.CommitID))
 
 	if err != nil {
-		fmt.Printf("❌【CommentCommit】创建Commit评论API调用失败：%v\n", err)
+		logDebug("❌【CommentCommit】创建Commit评论API调用失败：%v\n", err)
 		return fmt.Errorf("创建Commit评论API调用失败：%w", err)
 	}
 
 	if resp.StatusCode() != 200 && resp.StatusCode() != 201 {
-		// 新增403权限错误的友好提示
 		if resp.StatusCode() == 403 {
-			fmt.Printf("❌【CommentCommit】创建Commit评论失败：Token权限不足！\n")
-			fmt.Printf("   解决方案：\n")
-			fmt.Printf("   1. 登录云效控制台 → 个人设置 → 访问令牌，检查Token权限\n")
-			fmt.Printf("   2. 确保Token包含Codeup仓库的写权限和Commit评论权限\n")
-			fmt.Printf("   3. 确认你的账号对目标仓库有开发者及以上权限\n")
+			logDebug("❌【CommentCommit】创建Commit评论失败：Token权限不足！\n")
+			logDebug("   解决方案：\n")
+			logDebug("   1. 登录云效控制台 → 个人设置 → 访问令牌，检查Token权限\n")
+			logDebug("   2. 确保Token包含Codeup仓库的写权限和Commit评论权限\n")
+			logDebug("   3. 确认你的账号对目标仓库有开发者及以上权限\n")
 		}
-		fmt.Printf("❌【CommentCommit】创建Commit评论失败：状态码%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
+		logDebug("❌【CommentCommit】创建Commit评论失败：状态码%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
 		return fmt.Errorf("创建Commit评论失败：状态码%d，响应内容：%s", resp.StatusCode(), string(resp.Body()))
 	}
 
-	fmt.Printf("✅【CommentCommit】Commit评论提交成功（状态码：%d）\n", resp.StatusCode())
+	logDebug("✅【CommentCommit】Commit评论提交成功（状态码：%d）\n", resp.StatusCode())
 	respBody := string(resp.Body())
 	if respBody == "" {
-		fmt.Println("ℹ️【CommentCommit】云效返回空响应体，跳过JSON解析（评论已提交）")
+		logDebugln("ℹ️【CommentCommit】云效返回空响应体，跳过JSON解析（评论已提交）")
 		return nil
 	}
 
 	var commentResp map[string]interface{}
 	if err := json.Unmarshal(resp.Body(), &commentResp); err != nil {
-		fmt.Printf("ℹ️【CommentCommit】解析响应失败（但评论已提交）：%s，响应体：%s\n", err, respBody)
+		logDebug("ℹ️【CommentCommit】解析响应失败（但评论已提交）：%s，响应体：%s\n", err, respBody)
 		return nil // 解析失败不返回错误，因为核心功能（评论提交）已完成
 	}
 
-	fmt.Printf("✅【CommentCommit】评审结果评论成功，评论ID：%v\n", commentResp["id"])
+	logDebug("✅【CommentCommit】评审结果评论成功，评论ID：%v\n", commentResp["id"])
 	return nil
 }
 
 // 帮助信息
 func printUsage() {
 	usage := `
-🚀 airvw - AI驱动的Codeup代码评审工具
+🚀 airvw - AI驱动的阿里云效平台Codeup代码评审工具
 =====================***=======================
 功能：自动拉取Codeup MR/Commit的代码变更，执行静态检查，调用阿里云百炼AI评审，
       支持将评审结果评论到MR/Commit，阻断级问题直接终止流程。
@@ -904,7 +1004,7 @@ func printUsage() {
   1. Golang需提前安装golangci-lint（可选，未安装则跳过规则检查）
   2. Java需提前安装checkstyle（可选，未安装则跳过规则检查）
   3. Python需提前安装flake8（可选，未安装则跳过规则检查）
-   4. JavaScript需提前安装eslint（可选，未安装则跳过规则检查）
+  4. JavaScript需提前安装eslint（可选，未安装则跳过规则检查）
   4. 百炼API Key需具备文本生成权限
   5. 云效Token需具备Codeup MR/Commit评论权限
   6. 仅评审新增/修改的对应语言文件，二进制文件、删除/重命名文件会被过滤
@@ -930,16 +1030,19 @@ func main() {
 	flag.StringVar(&config.CommentTarget, "comment-target", "", "评论目标：mr（评论MR）/commit（评论Commit）/空（不评论）")
 	flag.StringVar(&config.CommitID, "commit-id", "", "评论Commit时的commit hash（comment-target=commit时必填）")
 	flag.StringVar(&config.Language, "language", "golang", "评审语言：golang/java/python（默认golang）")
+	flag.BoolVar(&config.Debug, "debug", false, "是否开启调试模式，默认false")
 	flag.Parse()
+
+	debugMode = config.Debug
 
 	if len(os.Args) == 2 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
 		printUsage()
 		os.Exit(0)
 	}
 
-	fmt.Println("\n=====================================")
-	fmt.Println("【airvw】命令行参数解析完成")
-	fmt.Println("=====================================")
+	logDebugln("\n=====================================")
+	logDebugln("【airvw】命令行参数解析完成")
+	logDebugln("=====================================")
 
 	var missingParams []string
 	if config.YunxiaoToken == "" {
@@ -974,11 +1077,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 根据语言获取对应的评审流程
 	reviewProcess := GetReviewProcess(config.Language)
-	fmt.Printf("ℹ️【airvw】使用%s语言评审流程\n", config.Language)
+	logDebug("ℹ️【airvw】使用%s语言评审流程\n", config.Language)
 
-	// 步骤1：拉取MR变更代码
 	diffFiles, err := GetMRDiff(config, reviewProcess)
 	if err != nil {
 		fmt.Printf("❌【airvw】拉取MR变更失败：%s\n", err)
@@ -989,10 +1090,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 步骤2：执行代码静态检查
 	lintResults := reviewProcess.RunLint(".", diffFiles)
 
-	// 步骤3：AI代码评审
 	aiResult, blockIssues, highIssues, err := AICodeReview(config, diffFiles, lintResults, reviewProcess)
 	if err != nil {
 		fmt.Printf("❌【airvw】AI评审失败：%s\n", err)
@@ -1007,10 +1106,10 @@ func main() {
 	case "commit":
 		commentErr = CommentCommit(config, aiResult)
 	default:
-		fmt.Println("ℹ️【airvw】未指定有效评论目标（mr/commit），跳过评论操作")
+		logDebugln("ℹ️【airvw】未指定有效评论目标（mr/commit），跳过评论操作")
 	}
 	if commentErr != nil {
-		fmt.Printf("⚠️【airvw】评论%s失败（不终止评审）：%s\n", config.CommentTarget, commentErr)
+		logDebug("⚠️【airvw】评论%s失败（不终止评审）：%s\n", config.CommentTarget, commentErr)
 	}
 
 	var shouldBlock bool
@@ -1028,13 +1127,20 @@ func main() {
 	}
 
 	if shouldBlock {
-		fmt.Printf("\n❌【airvw】检测到%d个%s问题，终止流程！\n", len(blockList), blockReason)
-		for _, issue := range blockList {
-			fmt.Printf("  - %s\n", issue)
+		logDebug("\n❌【airvw】检测到%d个%s问题，终止流程！\n", len(blockList), blockReason)
+		formattedIssues := formatBlockIssues(blockList)
+		result := ReviewResult{
+			Status:      "blocked",
+			TotalIssues: len(blockList),
+			BlockReason: blockReason,
+			BlockIssues: formattedIssues,
+			Message:     fmt.Sprintf("检测到%d个%s问题，终止流程", len(blockList), blockReason),
 		}
+		fmt.Println("\n======= ********** [代码问题详情] ********** =======")
+		printJSONResult(result)
 		os.Exit(1)
 	}
 
-	fmt.Printf("\n✅【airvw】所有评审完成，无阻断级问题，评审通过！（评论目标：%s）\n", config.CommentTarget)
+	fmt.Printf("\n✅【airvw】所有评审完成，无阻断级问题，评审通过！）\n")
 	os.Exit(0)
 }
