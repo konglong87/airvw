@@ -1160,7 +1160,7 @@ func main() {
 		}
 	}
 
-	// 如果有任何问题（包括建议级），则显示所有问题
+	// 显示任何问题（包括建议级）
 	if len(allIssues) > 0 {
 		formattedIssues := formatBlockIssues(allIssues)
 		result := ReviewResult{
@@ -1173,6 +1173,6 @@ func main() {
 		printJSONResult(result)
 	}
 
-	fmt.Printf("\n✅【airvw】所有评审完成，无阻断级问题，评审通过！）\n")
+	fmt.Printf("\n✅【airvw】所有评审完成，无阻断级问题，评审通过 ✅）\n")
 	os.Exit(0)
 }
