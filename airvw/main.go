@@ -1140,6 +1140,38 @@ func main() {
 		printJSONResult(result)
 		os.Exit(1)
 	}
+	// 即使评审通过（不阻塞），用户也能看到AI评审提供的所有建议结果，而不仅仅是看到"评审通过"的提示
+	// 解析AI评审结果中的所有问题（包括建议级）
+	var allIssues []string
+	if aiResult != "✅ 未发现任何问题" {
+		lines := strings.Split(aiResult, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// 提取所有等级的问题
+			if strings.Contains(line, fmt.Sprintf("[%s]", LevelBlock)) ||
+				strings.Contains(line, fmt.Sprintf("[%s]", LevelHigh)) ||
+				strings.Contains(line, fmt.Sprintf("[%s]", LevelMedium)) ||
+				strings.Contains(line, fmt.Sprintf("[%s]", LevelSuggest)) {
+				allIssues = append(allIssues, line)
+			}
+		}
+	}
+
+	// 如果有任何问题（包括建议级），则显示所有问题
+	if len(allIssues) > 0 {
+		formattedIssues := formatBlockIssues(allIssues)
+		result := ReviewResult{
+			Status:      "success",
+			TotalIssues: len(allIssues),
+			BlockIssues: formattedIssues,
+			Message:     fmt.Sprintf("评审通过，发现%d个非阻塞问题", len(allIssues)),
+		}
+		fmt.Println("\n======= ********** [AI评审建议详情] ********** =======")
+		printJSONResult(result)
+	}
 
 	fmt.Printf("\n✅【airvw】所有评审完成，无阻断级问题，评审通过！）\n")
 	os.Exit(0)
