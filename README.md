@@ -1,7 +1,7 @@
 # airvw - AI驱动的Codeup Go代码评审工具
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-blue.svg)](https://golang.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)w
 
 airvw 是一款面向阿里云效Codeup的AI代码评审工具，支持自动拉取MR/Commit的Go代码变更、执行golangci-lint规则检查、调用阿里云百炼AI进行智能评审，并可将评审结果自动评论到Codeup MR/Commit中，阻断级问题直接终止流程。
 
