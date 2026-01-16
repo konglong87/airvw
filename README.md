@@ -12,6 +12,7 @@ airvw 是一款面向阿里云效Codeup的AI代码评审工具，支持自动拉
 - 💬 自动将评审结果评论到Codeup MR/Commit[可选]
 - 🚫 阻断级问题自动终止流程，强制修复后才能合并
 - 📝 详细的日志输出，便于问题排查
+- 🔔 支持钉钉机器人通知，评审结果实时推送[可选]
 
 ## 📦 安装
 
@@ -19,6 +20,7 @@ airvw 是一款面向阿里云效Codeup的AI代码评审工具，支持自动拉
 - Go 1.21+ 环境
 - 可访问阿里云效OpenAPI和百炼API
 - （可选）golangci-lint（用于代码规范检查）
+- （可选）钉钉群机器人（用于评审结果通知）
 
 ### 安装方式
 ```bash
@@ -28,7 +30,7 @@ go install github.com/konglong87/airvw@latest
 # 验证安装
 airvw --help
 
-# 使用
+# 基础使用
 airvw \
   --yunxiao-token 新的Token \
   --org-id 你的组织ID \
@@ -38,6 +40,18 @@ airvw \
   --to-commit 目标CommitID \
   --baichuan-key 你的百炼Key \
   --comment-target commit
+
+# 启用钉钉通知
+airvw \
+  --yunxiao-token 新的Token \
+  --org-id 你的组织ID \
+  --repo-id 你的仓库ID \
+  --from-commit 源CommitID \
+  --to-commit 目标CommitID \
+  --baichuan-key 你的百炼Key \
+  --enable-dingtalk \
+  --dingtalk-token 你的钉钉Token \
+  --dingtalk-secret 你的钉钉Secret
 ```
 
 
@@ -47,6 +61,12 @@ airvw \
    - 缺失参数时会自动打印帮助信息，方便用户快速排查；
    - 保留原有所有功能，仅优化了帮助信息的展示。
 
+2. **钉钉通知配置**：
+   - 在钉钉群中添加自定义机器人，获取Webhook地址中的Token和加签Secret；
+   - 使用`--enable-dingtalk`参数启用钉钉通知功能；
+   - 配置`--dingtalk-token`和`--dingtalk-secret`参数；
+   - 评审完成后会自动将结果发送到钉钉群，支持@所有人提醒。
+
 
 ### 总结
 | 优化项         | 核心效果 |
@@ -54,4 +74,5 @@ airvw \
 | 自定义--help   | `go install`安装后，`airvw --help`显示友好的结构化使用教程 |
 | README.md文档 | 包含安装、使用、参数、示例、常见问题 |
 | 参数校验        | 缺失参数时自动打印帮助信息，降低使用门槛 |
+| 钉钉通知        | 支持钉钉机器人实时推送评审结果，支持@所有人 |
 

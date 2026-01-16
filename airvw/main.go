@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 
+	"github.com/blinkbean/dingtalk"
 	"github.com/go-resty/resty/v2"
 )
 
@@ -34,6 +36,9 @@ type Config struct {
 	CommitID       string // 评论Commit时的commit hash（comment-target=commit时必填）
 	Language       string // 评审语言：golang/java/python/javascript（默认golang）
 	Debug          bool   // 是否开启调试模式，默认false
+	DingTalkToken  string // 钉钉机器人Token
+	DingTalkSecret string // 钉钉机器人Secret
+	EnableDingTalk bool   // 是否启用钉钉通知，默认false
 }
 
 // DiffItem 对应接口返回的diffs数组元素
@@ -122,10 +127,25 @@ func formatBlockIssues(issues []string) []BlockIssue {
 func printJSONResult(result ReviewResult) {
 	jsonData, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		fmt.Printf("❌【airvw】JSON格式化失败：%s\n", err)
+		fmt.Printf("❌【aiutoCR】JSON格式化失败：%s\n", err)
 		return
 	}
 	fmt.Println(string(jsonData))
+}
+
+// DingDingRemind 发送钉钉消息通知
+func DingDingRemind(token, secret, content string) {
+	// 初始化钉钉客户端（自动处理加签逻辑）
+	cli := dingtalk.InitDingTalkWithSecret(token, secret)
+	// 发送Markdown消息，支持@所有人（也可自定义@指定人）
+	// 第一个参数是Markdown消息的标题，第二个是内容，第三个是可选配置（如@所有人）
+	err := cli.SendTextMessage("AI代码审查结果通知\n \n"+content, dingtalk.WithAtAll())
+	//err := cli.SendMarkDownMessage("AI代码审查结果通知", content, dingtalk.WithAtAll())
+	if err != nil {
+		log.Printf("钉钉机器人发送失败: %v", err)
+		return
+	}
+	log.Println("钉钉消息发送成功！")
 }
 
 // ReviewProcess 代码评审流程接口
@@ -972,6 +992,9 @@ func printUsage() {
     --mr-id int               MR的ID（comment-target=mr时必填）
     --commit-id string        Commit的hash（comment-target=commit时必填）
     --language string         评审语言（默认：golang，可选：golang/java/python/javascript）
+    --dingtalk-token string   钉钉机器人Token（可选）
+    --dingtalk-secret string   钉钉机器人Secret（可选）
+    --enable-dingtalk         是否启用钉钉通知（默认：false）
     --help                    显示此帮助信息
 
 💡 使用示例：
@@ -999,6 +1022,11 @@ func printUsage() {
      airvw --yunxiao-token pt-xxx --org-id 67aaaaaaaaaa --repo-id 5023797 \
            --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
            --language python
+
+  6. 启用钉钉通知：
+     airvw --yunxiao-token pt-xxx --org-id 67aaaaaaaaaa --repo-id 5023797 \
+           --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
+           --enable-dingtalk --dingtalk-token xxx --dingtalk-secret xxx
 
 ⚠️ 注意事项：
   1. Golang需提前安装golangci-lint（可选，未安装则跳过规则检查）
@@ -1031,6 +1059,9 @@ func main() {
 	flag.StringVar(&config.CommitID, "commit-id", "", "评论Commit时的commit hash（comment-target=commit时必填）")
 	flag.StringVar(&config.Language, "language", "golang", "评审语言：golang/java/python（默认golang）")
 	flag.BoolVar(&config.Debug, "debug", false, "是否开启调试模式，默认false")
+	flag.StringVar(&config.DingTalkToken, "dingtalk-token", "", "钉钉机器人Token（可选）")
+	flag.StringVar(&config.DingTalkSecret, "dingtalk-secret", "", "钉钉机器人Secret（可选）")
+	flag.BoolVar(&config.EnableDingTalk, "enable-dingtalk", false, "是否启用钉钉通知，默认false")
 	flag.Parse()
 
 	debugMode = config.Debug
@@ -1041,7 +1072,7 @@ func main() {
 	}
 
 	logDebugln("\n=====================================")
-	logDebugln("【airvw】命令行参数解析完成")
+	logDebugln("【aiutoCR】命令行参数解析完成")
 	logDebugln("=====================================")
 
 	var missingParams []string
@@ -1072,21 +1103,21 @@ func main() {
 	}
 
 	if len(missingParams) > 0 {
-		fmt.Printf("❌【airvw】错误：缺少必填参数：%s\n", strings.Join(missingParams, ", "))
+		fmt.Printf("❌【aiutoCR】错误：缺少必填参数：%s\n", strings.Join(missingParams, ", "))
 		printUsage()
 		os.Exit(1)
 	}
 
 	reviewProcess := GetReviewProcess(config.Language)
-	logDebug("ℹ️【airvw】使用%s语言评审流程\n", config.Language)
+	logDebug("ℹ️【aiutoCR】使用%s语言评审流程\n", config.Language)
 
 	diffFiles, err := GetMRDiff(config, reviewProcess)
 	if err != nil {
-		fmt.Printf("❌【airvw】拉取MR变更失败：%s\n", err)
+		fmt.Printf("❌【aiutoCR】拉取MR变更失败：%s\n", err)
 		os.Exit(1)
 	}
 	if len(diffFiles) == 0 {
-		fmt.Printf("✅【airvw】无变更的%s文件，评审通过\n", reviewProcess.GetFileExtension())
+		fmt.Printf("✅【aiutoCR】无变更的%s文件，评审通过\n", reviewProcess.GetFileExtension())
 		os.Exit(0)
 	}
 
@@ -1094,7 +1125,7 @@ func main() {
 
 	aiResult, blockIssues, highIssues, err := AICodeReview(config, diffFiles, lintResults, reviewProcess)
 	if err != nil {
-		fmt.Printf("❌【airvw】AI评审失败：%s\n", err)
+		fmt.Printf("❌【aiutoCR】AI评审失败：%s\n", err)
 		os.Exit(1)
 	}
 
@@ -1106,10 +1137,10 @@ func main() {
 	case "commit":
 		commentErr = CommentCommit(config, aiResult)
 	default:
-		logDebugln("ℹ️【airvw】未指定有效评论目标（mr/commit），跳过评论操作")
+		logDebugln("ℹ️【aiutoCR】未指定有效评论目标（mr/commit），跳过评论操作")
 	}
 	if commentErr != nil {
-		logDebug("⚠️【airvw】评论%s失败（不终止评审）：%s\n", config.CommentTarget, commentErr)
+		logDebug("⚠️【aiutoCR】评论%s失败（不终止评审）：%s\n", config.CommentTarget, commentErr)
 	}
 
 	var shouldBlock bool
@@ -1127,7 +1158,7 @@ func main() {
 	}
 
 	if shouldBlock {
-		logDebug("\n❌【airvw】检测到%d个%s问题，终止流程！\n", len(blockList), blockReason)
+		logDebug("\n❌【aiutoCR】检测到%d个%s问题，终止流程！\n", len(blockList), blockReason)
 		formattedIssues := formatBlockIssues(blockList)
 		result := ReviewResult{
 			Status:      "blocked",
@@ -1138,6 +1169,13 @@ func main() {
 		}
 		fmt.Println("\n======= ********** [代码问题详情] ********** =======")
 		printJSONResult(result)
+
+		// 发送钉钉通知
+		if config.EnableDingTalk {
+			jsonData, _ := json.MarshalIndent(result, "", "  ")
+			DingDingRemind(config.DingTalkToken, config.DingTalkSecret, string(jsonData))
+		}
+
 		os.Exit(1)
 	}
 	// 即使评审通过（不阻塞），用户也能看到AI评审提供的所有建议结果，而不仅仅是看到"评审通过"的提示
@@ -1171,8 +1209,14 @@ func main() {
 		}
 		fmt.Println("\n======= ********** [AI评审建议详情] ********** =======")
 		printJSONResult(result)
+
+		// 发送钉钉通知
+		if config.EnableDingTalk {
+			jsonData, _ := json.MarshalIndent(result, "", "  ")
+			DingDingRemind(config.DingTalkToken, config.DingTalkSecret, string(jsonData))
+		}
 	}
 
-	fmt.Printf("\n✅【airvw】所有评审完成，无阻断级问题，评审通过 ✅）\n")
+	fmt.Printf("\n✅【aiutoCR】所有评审完成，无阻断级问题，评审通过 ✅）\n")
 	os.Exit(0)
 }
