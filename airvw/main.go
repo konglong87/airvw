@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/blinkbean/dingtalk"
 	"github.com/go-resty/resty/v2"
@@ -59,6 +60,42 @@ type CompareResponse struct {
 	Messages []string      `json:"messages"` //
 }
 
+// CompareResponseV2 适配最新版云效OpenAPI返回的结构体
+type CompareResponseV2 struct {
+	Commits []struct {
+		AuthorEmail    string    `json:"authorEmail"`
+		AuthorName     string    `json:"authorName"`
+		AuthoredDate   time.Time `json:"authoredDate"`
+		CommittedDate  time.Time `json:"committedDate"`
+		CommitterEmail string    `json:"committerEmail"`
+		CommitterName  string    `json:"committerName"`
+		Id             string    `json:"id"`
+		Message        string    `json:"message"`
+		ParentIds      []string  `json:"parentIds"`
+		ShortId        string    `json:"shortId"`
+		Stats          struct {
+			Additions int `json:"additions"`
+			Deletions int `json:"deletions"`
+			Total     int `json:"total"`
+		} `json:"stats"`
+		Title  string `json:"title"`
+		WebUrl string `json:"webUrl"`
+	} `json:"commits"`
+	Diffs []struct {
+		AMode       string `json:"aMode"`
+		BMode       string `json:"bMode"`
+		DeletedFile bool   `json:"deletedFile"`
+		Diff        string `json:"diff"`
+		IsBinary    bool   `json:"isBinary"`
+		NewFile     bool   `json:"newFile"`
+		NewId       string `json:"newId"`
+		NewPath     string `json:"newPath"`
+		OldId       string `json:"oldId"`
+		OldPath     string `json:"oldPath"`
+		RenamedFile bool   `json:"renamedFile"`
+	} `json:"diffs"`
+}
+
 var client = resty.New()
 var debugMode = false // 全局调试模式标志
 
@@ -92,6 +129,14 @@ type ReviewResult struct {
 	BlockReason string       `json:"block_reason,omitempty"` // 阻断原因
 	BlockIssues []BlockIssue `json:"block_issues,omitempty"` // 阻断问题列表
 	Message     string       `json:"message"`                // 消息
+	CommitInfo  *CommitInfo  `json:"commit_info,omitempty"`  // Commit信息
+}
+
+// CommitInfo Commit信息结构体
+type CommitInfo struct {
+	AuthorName string `json:"author_name"` // 提交人姓名
+	Message    string `json:"message"`     // 提交消息
+	WebUrl     string `json:"web_url"`     // Web链接
 }
 
 // formatBlockIssues 将问题字符串转换为结构化的BlockIssue
@@ -137,10 +182,59 @@ func printJSONResult(result ReviewResult) {
 func DingDingRemind(token, secret, content string) {
 	// 初始化钉钉客户端（自动处理加签逻辑）
 	cli := dingtalk.InitDingTalkWithSecret(token, secret)
+
+	// 解析ReviewResult
+	var result ReviewResult
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		log.Printf("解析评审结果失败: %v", err)
+		return
+	}
+
+	// 构建Markdown消息
+	var markdown strings.Builder
+	markdown.WriteString("## AI代码审查结果通知\n\n")
+
+	// 添加状态
+	if result.Status == "blocked" {
+		markdown.WriteString("### ❌ 评审被阻断\n\n")
+	} else {
+		markdown.WriteString("### ✅ 评审通过\n\n")
+	}
+
+	// 添加commit信息
+	if result.CommitInfo != nil {
+		markdown.WriteString("### 📝 Commit信息\n\n")
+		markdown.WriteString(fmt.Sprintf("- **提交人**: %s\n", result.CommitInfo.AuthorName))
+		markdown.WriteString(fmt.Sprintf("- **提交消息**: %s\n", result.CommitInfo.Message))
+		markdown.WriteString(fmt.Sprintf("- **Web链接**: [%s](%s)\n\n", result.CommitInfo.WebUrl, result.CommitInfo.WebUrl))
+	}
+
+	// 添加评审结果
+	markdown.WriteString("### 📊 评审结果\n\n")
+	markdown.WriteString(fmt.Sprintf("- **状态**: %s\n", result.Status))
+	markdown.WriteString(fmt.Sprintf("- **问题数量**: %d\n", result.TotalIssues))
+	if result.BlockReason != "" {
+		markdown.WriteString(fmt.Sprintf("- **阻断原因**: %s\n", result.BlockReason))
+	}
+	markdown.WriteString(fmt.Sprintf("- **消息**: %s\n\n", result.Message))
+
+	// 添加问题详情
+	if len(result.BlockIssues) > 0 {
+		markdown.WriteString("### 🐛 问题详情\n\n")
+		for i, issue := range result.BlockIssues {
+			markdown.WriteString(fmt.Sprintf("**%d. [%s] %s:%s**\n\n", i+1, issue.Level, issue.File, issue.Line))
+			markdown.WriteString(fmt.Sprintf("- 问题描述: %s\n", issue.Issue))
+			if issue.Suggestion != "" {
+				markdown.WriteString(fmt.Sprintf("- 修复建议: %s\n", issue.Suggestion))
+			}
+			markdown.WriteString("\n")
+		}
+	}
+
 	// 发送Markdown消息，支持@所有人（也可自定义@指定人）
 	// 第一个参数是Markdown消息的标题，第二个是内容，第三个是可选配置（如@所有人）
-	err := cli.SendTextMessage("AI代码审查结果通知\n \n"+content, dingtalk.WithAtAll())
-	//err := cli.SendMarkDownMessage("AI代码审查结果通知", content, dingtalk.WithAtAll())
+	err := cli.SendMarkDownMessage("AI代码审查结果通知", markdown.String(), dingtalk.WithAtAll())
+	//err := cli.SendMarkdownMessage("AI代码审查结果通知", markdown.String(), dingtalk.WithAtAll())
 	if err != nil {
 		log.Printf("钉钉机器人发送失败: %v", err)
 		return
@@ -600,7 +694,7 @@ func maskSensitive(str string) string {
 }
 
 // 1. 拉取MR变更代码
-func GetMRDiff(config Config, process ReviewProcess) (map[string]string, error) {
+func GetMRDiff(config Config, process ReviewProcess) (map[string]string, *CommitInfo, error) {
 	logDebugln("=====================================")
 	logDebugln("【GetMRDiff】开始执行，配置详情：")
 	logDebug("  - YunxiaoToken: %s\n", maskSensitive(config.YunxiaoToken))
@@ -630,30 +724,55 @@ func GetMRDiff(config Config, process ReviewProcess) (map[string]string, error) 
 
 	if err != nil {
 		logDebug("❌【GetMRDiff】云效OpenAPI请求失败：%v\n", err)
-		return nil, fmt.Errorf("云效OpenAPI请求失败：%w", err)
+		return nil, nil, fmt.Errorf("云效OpenAPI请求失败：%w", err)
 	}
 	if resp.StatusCode() != 200 {
 		logDebug("❌【GetMRDiff】云效OpenAPI返回异常状态码：%d，响应内容：%s\n", resp.StatusCode(), string(resp.Body()))
-		return nil, fmt.Errorf("云效OpenAPI返回异常状态码：%d，响应内容：%s",
+		return nil, nil, fmt.Errorf("云效OpenAPI返回异常状态码：%d，响应内容：%s",
 			resp.StatusCode(), string(resp.Body()))
 	}
 
-	var compareResp CompareResponse
+	var compareResp CompareResponseV2
 	if err := json.Unmarshal(resp.Body(), &compareResp); err != nil {
 		logDebug("❌【GetMRDiff】解析云效OpenAPI响应失败：%v，响应内容：%s\n", err, string(resp.Body()))
-		return nil, fmt.Errorf("解析云效OpenAPI响应失败：%w，响应内容：%s", err, string(resp.Body()))
+		return nil, nil, fmt.Errorf("解析云效OpenAPI响应失败：%w，响应内容：%s", err, string(resp.Body()))
 	}
 
 	logDebug("✅【GetMRDiff】成功拉取响应，共检测到%d个变更文件\n", len(compareResp.Diffs))
 
-	diffMap := process.FilterFiles(compareResp.Diffs)
+	// 提取commit信息
+	var commitInfo *CommitInfo
+	if len(compareResp.Commits) > 0 {
+		commit := compareResp.Commits[0]
+		commitInfo = &CommitInfo{
+			AuthorName: commit.AuthorName,
+			Message:    commit.Message,
+			WebUrl:     commit.WebUrl,
+		}
+	}
+
+	// 将CompareResponseV2中的Diffs转换为[]DiffItem类型
+	var diffItems []DiffItem
+	for _, diff := range compareResp.Diffs {
+		diffItems = append(diffItems, DiffItem{
+			Diff:        diff.Diff,
+			NewPath:     diff.NewPath,
+			OldPath:     diff.OldPath,
+			NewFile:     diff.NewFile,
+			DeletedFile: diff.DeletedFile,
+			RenamedFile: diff.RenamedFile,
+			Binary:      diff.IsBinary,
+		})
+	}
+
+	diffMap := process.FilterFiles(diffItems)
 
 	if len(diffMap) == 0 {
 		logDebug("ℹ️【GetMRDiff】未检测到新增/修改的%s文件，无需评审\n", process.GetFileExtension())
-		return diffMap, nil
+		return diffMap, commitInfo, nil
 	}
 	logDebug("📌【GetMRDiff】共筛选出%d个需评审的%s文件\n", len(diffMap), process.GetFileExtension())
-	return diffMap, nil
+	return diffMap, commitInfo, nil
 }
 
 // 2. 执行golangci-lint规则检查
@@ -1111,7 +1230,7 @@ func main() {
 	reviewProcess := GetReviewProcess(config.Language)
 	logDebug("ℹ️【aiutoCR】使用%s语言评审流程\n", config.Language)
 
-	diffFiles, err := GetMRDiff(config, reviewProcess)
+	diffFiles, commitInfo, err := GetMRDiff(config, reviewProcess)
 	if err != nil {
 		fmt.Printf("❌【aiutoCR】拉取MR变更失败：%s\n", err)
 		os.Exit(1)
@@ -1166,6 +1285,7 @@ func main() {
 			BlockReason: blockReason,
 			BlockIssues: formattedIssues,
 			Message:     fmt.Sprintf("检测到%d个%s问题，终止流程", len(blockList), blockReason),
+			CommitInfo:  commitInfo,
 		}
 		fmt.Println("\n======= ********** [代码问题详情] ********** =======")
 		printJSONResult(result)
@@ -1206,6 +1326,7 @@ func main() {
 			TotalIssues: len(allIssues),
 			BlockIssues: formattedIssues,
 			Message:     fmt.Sprintf("评审通过，发现%d个非阻塞问题", len(allIssues)),
+			CommitInfo:  commitInfo,
 		}
 		fmt.Println("\n======= ********** [AI评审建议详情] ********** =======")
 		printJSONResult(result)
