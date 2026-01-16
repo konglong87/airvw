@@ -1,9 +1,9 @@
-# airvw - AI驱动的Codeup Go代码评审工具
+# aiutoCR - AI驱动的Codeup Go代码评审工具
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)w
 
-airvw 是一款面向阿里云效Codeup的AI代码评审工具，支持自动拉取MR/Commit的Go代码变更、执行golangci-lint规则检查、调用阿里云百炼AI进行智能评审，并可将评审结果自动评论到Codeup MR/Commit中，阻断级问题直接终止流程。
+aiutoCR 是一款面向阿里云效Codeup的AI代码评审工具，支持自动拉取MR/Commit的Go代码变更、执行golangci-lint规则检查、调用阿里云百炼AI进行智能评审，并可将评审结果自动评论到Codeup MR/Commit中，阻断级问题直接终止流程。
 
 ## ✨ 核心功能
 - 📥 自动拉取Codeup MR/Commit的Go代码变更（仅筛选新增/修改的.go文件）
@@ -24,8 +24,8 @@ airvw 是一款面向阿里云效Codeup的AI代码评审工具，支持自动拉
 
 ### 安装方式
 ```bash
-# 从GitHub安装（替换为你的仓库地址）
-go install github.com/konglong87/airvw@latest
+# 从GitHub安装
+go install github.com/konglong87/airvw/airvw@latest
 
 # 验证安装
 airvw --help
