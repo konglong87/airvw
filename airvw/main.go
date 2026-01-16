@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -186,7 +185,7 @@ func DingDingRemind(token, secret, content string) {
 	// 解析ReviewResult
 	var result ReviewResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		log.Printf("解析评审结果失败: %v", err)
+		fmt.Printf("解析评审结果失败: %v \n", err)
 		return
 	}
 
@@ -236,10 +235,10 @@ func DingDingRemind(token, secret, content string) {
 	err := cli.SendMarkDownMessage("AI代码审查结果通知", markdown.String(), dingtalk.WithAtAll())
 	//err := cli.SendMarkdownMessage("AI代码审查结果通知", markdown.String(), dingtalk.WithAtAll())
 	if err != nil {
-		log.Printf("钉钉机器人发送失败: %v", err)
+		fmt.Printf("钉钉机器人发送失败: %v\n", err)
 		return
 	}
-	log.Println("钉钉消息发送成功！")
+	fmt.Println("钉钉消息发送成功！")
 }
 
 // ReviewProcess 代码评审流程接口
