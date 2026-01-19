@@ -475,6 +475,20 @@ func (j *JavaScriptReviewProcess) GetFileExtension() string {
 	return ".js"
 }
 
+// KotlinReviewProcess Kotlin语言的评审流程实现
+type KotlinReviewProcess struct{}
+
+func (k *KotlinReviewProcess) GetFileExtension() string {
+	return ".kt"
+}
+
+// SwiftReviewProcess Swift语言的评审流程实现
+type SwiftReviewProcess struct{}
+
+func (s *SwiftReviewProcess) GetFileExtension() string {
+	return ".swift"
+}
+
 func (p *PythonReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
 	var reviewContent string
 	for file, content := range diffFiles {
@@ -495,6 +509,26 @@ func (p *PythonReviewProcess) GetPrompt(diffFiles map[string]string, lintResults
 %s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
 }
 
+func (s *SwiftReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
+	var reviewContent string
+	for file, content := range diffFiles {
+		reviewContent += fmt.Sprintf("=== 文件：%s ===\n规则检查结果：%s\n代码变更内容：\n%s\n\n",
+			file, lintResults[file], content)
+	}
+
+	return fmt.Sprintf(`
+你是资深Swift工程师，仅评审Codeup MR中新增/修改的Swift代码，严格按以下要求输出：
+1. 评审维度：内存管理、可选项处理、并发安全、错误处理、代码规范、逻辑漏洞、性能问题、资源泄漏、类型安全、协议使用；
+2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
+3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
+4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
+5. 若无问题，仅输出「✅ 未发现任何问题」。
+
+待评审的MR变更代码-
+---------------------
+%s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
+}
+
 func (j *JavaScriptReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
 	var reviewContent string
 	for file, content := range diffFiles {
@@ -505,6 +539,26 @@ func (j *JavaScriptReviewProcess) GetPrompt(diffFiles map[string]string, lintRes
 	return fmt.Sprintf(`
 你是资深JavaScript工程师，仅评审Codeup MR中新增/修改的JavaScript代码，严格按以下要求输出：
 1. 评审维度：异步编程、错误处理、代码规范(ESLint)、逻辑漏洞、性能问题、内存泄漏、DOM操作、事件处理、跨浏览器兼容性；
+2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
+3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
+4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
+5. 若无问题，仅输出「✅ 未发现任何问题」。
+
+待评审的MR变更代码-
+---------------------
+%s`, LevelBlock, LevelHigh, LevelMedium, LevelSuggest, LevelBlock, reviewContent)
+}
+
+func (k *KotlinReviewProcess) GetPrompt(diffFiles map[string]string, lintResults map[string]string) string {
+	var reviewContent string
+	for file, content := range diffFiles {
+		reviewContent += fmt.Sprintf("=== 文件：%s ===\n规则检查结果：%s\n代码变更内容：\n%s\n\n",
+			file, lintResults[file], content)
+	}
+
+	return fmt.Sprintf(`
+你是资深Kotlin工程师，仅评审Codeup MR中新增/修改的Kotlin代码，严格按以下要求输出：
+1. 评审维度：空安全、协程使用、异常处理、内存优化、代码规范、逻辑漏洞、性能问题、资源泄漏、泛型使用、扩展函数；
 2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
 3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
 4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
@@ -556,6 +610,47 @@ func (p *PythonReviewProcess) RunLint(repoPath string, diffFiles map[string]stri
 	return lintResults
 }
 
+func (s *SwiftReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
+	logDebugln("\n=====================================")
+	logDebugln("【RunSwiftLint】开始执行")
+	logDebug("  - 仓库路径：%s\n", repoPath)
+	logDebug("  - 待检查文件数：%d\n", len(diffFiles))
+	logDebugln("=====================================")
+
+	lintResults := make(map[string]string)
+
+	// 检查是否安装了swiftlint
+	if _, err := exec.LookPath("swiftlint"); err != nil {
+		logDebugln("⚠️【RunSwiftLint】未检测到swiftlint，跳过规则检查")
+		for file := range diffFiles {
+			lintResults[file] = "【规则检查】未执行：缺少swiftlint环境"
+		}
+		return lintResults
+	}
+
+	for file := range diffFiles {
+		logDebug("ℹ️【RunSwiftLint】检查文件：%s\n", file)
+		cmd := exec.Command("swiftlint", "lint", file)
+		output, err := cmd.CombinedOutput()
+
+		if err != nil {
+			logDebug("⚠️【RunSwiftLint】文件%s检查失败：%v\n", file, err)
+			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
+			continue
+		}
+
+		if string(output) == "" {
+			logDebug("✅【RunSwiftLint】文件%s未发现违规问题\n", file)
+			lintResults[file] = "【规则检查】未发现违规问题"
+		} else {
+			logDebug("⚠️【RunSwiftLint】文件%s发现违规问题：%s\n", file, string(output))
+			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
+		}
+	}
+
+	return lintResults
+}
+
 func (p *PythonReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string {
 	diffMap := make(map[string]string)
 	for _, diffItem := range diffItems {
@@ -585,6 +680,42 @@ func (p *PythonReviewProcess) FilterFiles(diffItems []DiffItem) map[string]strin
 
 		// 仅保留新增/修改的Python文件
 		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".py") {
+			diffMap[filePath] = diffItem.Diff
+			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+		}
+	}
+	return diffMap
+}
+
+func (s *SwiftReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string {
+	diffMap := make(map[string]string)
+	for _, diffItem := range diffItems {
+		// 跳过二进制文件
+		if diffItem.Binary {
+			logDebug("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			continue
+		}
+
+		// 确定文件路径（兼容重命名/删除场景）
+		filePath := diffItem.NewPath
+		if filePath == "" {
+			filePath = diffItem.OldPath
+		}
+
+		// 确定文件状态
+		var status string
+		if diffItem.NewFile {
+			status = "added"
+		} else if diffItem.DeletedFile {
+			status = "removed"
+		} else if diffItem.RenamedFile {
+			status = "renamed"
+		} else {
+			status = "modified"
+		}
+
+		// 仅保留新增/修改的Swift文件
+		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".swift") {
 			diffMap[filePath] = diffItem.Diff
 			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
 		}
@@ -633,6 +764,47 @@ func (j *JavaScriptReviewProcess) RunLint(repoPath string, diffFiles map[string]
 	return lintResults
 }
 
+func (k *KotlinReviewProcess) RunLint(repoPath string, diffFiles map[string]string) map[string]string {
+	logDebugln("\n=====================================")
+	logDebugln("【RunKotlinLint】开始执行")
+	logDebug("  - 仓库路径：%s\n", repoPath)
+	logDebug("  - 待检查文件数：%d\n", len(diffFiles))
+	logDebugln("=====================================")
+
+	lintResults := make(map[string]string)
+
+	// 检查是否安装了ktlint
+	if _, err := exec.LookPath("ktlint"); err != nil {
+		logDebugln("⚠️【RunKotlinLint】未检测到ktlint，跳过规则检查")
+		for file := range diffFiles {
+			lintResults[file] = "【规则检查】未执行：缺少ktlint环境"
+		}
+		return lintResults
+	}
+
+	for file := range diffFiles {
+		logDebug("ℹ️【RunKotlinLint】检查文件：%s\n", file)
+		cmd := exec.Command("ktlint", file)
+		output, err := cmd.CombinedOutput()
+
+		if err != nil {
+			logDebug("⚠️【RunKotlinLint】文件%s检查失败：%v\n", file, err)
+			lintResults[file] = fmt.Sprintf("【规则检查】执行失败：%s，输出：%s", err.Error(), string(output))
+			continue
+		}
+
+		if string(output) == "" {
+			logDebug("✅【RunKotlinLint】文件%s未发现违规问题\n", file)
+			lintResults[file] = "【规则检查】未发现违规问题"
+		} else {
+			logDebug("⚠️【RunKotlinLint】文件%s发现违规问题：%s\n", file, string(output))
+			lintResults[file] = fmt.Sprintf("【规则检查】发现问题：%s", string(output))
+		}
+	}
+
+	return lintResults
+}
+
 // GetReviewProcess 根据语言获取对应的评审流程实现
 func GetReviewProcess(language string) ReviewProcess {
 	switch strings.ToLower(language) {
@@ -642,6 +814,10 @@ func GetReviewProcess(language string) ReviewProcess {
 		return &PythonReviewProcess{}
 	case "javascript", "js":
 		return &JavaScriptReviewProcess{}
+	case "swift":
+		return &SwiftReviewProcess{}
+	case "kotlin", "kt":
+		return &KotlinReviewProcess{}
 	case "golang", "go", "":
 		fallthrough
 	default:
@@ -678,6 +854,42 @@ func (j *JavaScriptReviewProcess) FilterFiles(diffItems []DiffItem) map[string]s
 
 		// 仅保留新增/修改的JavaScript文件
 		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".js") {
+			diffMap[filePath] = diffItem.Diff
+			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
+		}
+	}
+	return diffMap
+}
+
+func (k *KotlinReviewProcess) FilterFiles(diffItems []DiffItem) map[string]string {
+	diffMap := make(map[string]string)
+	for _, diffItem := range diffItems {
+		// 跳过二进制文件
+		if diffItem.Binary {
+			logDebug("ℹ️【GetMRDiff】跳过二进制文件：%s\n", diffItem.NewPath)
+			continue
+		}
+
+		// 确定文件路径（兼容重命名/删除场景）
+		filePath := diffItem.NewPath
+		if filePath == "" {
+			filePath = diffItem.OldPath
+		}
+
+		// 确定文件状态
+		var status string
+		if diffItem.NewFile {
+			status = "added"
+		} else if diffItem.DeletedFile {
+			status = "removed"
+		} else if diffItem.RenamedFile {
+			status = "renamed"
+		} else {
+			status = "modified"
+		}
+
+		// 仅保留新增/修改的Kotlin文件
+		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".kt") {
 			diffMap[filePath] = diffItem.Diff
 			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
 		}
@@ -943,6 +1155,10 @@ func CommentMR(config Config, reviewResult string) error {
 		langDesc = "Python"
 	case "javascript", "js":
 		langDesc = "JavaScript"
+	case "swift":
+		langDesc = "Swift"
+	case "kotlin", "kt":
+		langDesc = "Kotlin"
 	case "golang", "go", "":
 		fallthrough
 	default:
@@ -1016,6 +1232,10 @@ func CommentCommit(config Config, reviewResult string) error {
 		langDesc = "Python"
 	case "javascript", "js":
 		langDesc = "JavaScript"
+	case "swift":
+		langDesc = "Swift"
+	case "kotlin", "kt":
+		langDesc = "Kotlin"
 	case "golang", "go", "":
 		fallthrough
 	default:
@@ -1086,7 +1306,7 @@ func printUsage() {
 =====================***=======================
 功能：自动拉取Codeup MR/Commit的代码变更，执行静态检查，调用阿里云百炼AI评审，
       支持将评审结果评论到MR/Commit，阻断级问题直接终止流程。
-      支持多种编程语言：Golang/Java/Python/JavaScript
+      支持多种编程语言：Golang/Java/Python/JavaScript/Swift/Kotlin
 
 📦 安装方式：
   go install github.com/konglong87/airvw@latest
@@ -1109,7 +1329,7 @@ func printUsage() {
     --comment-target string   评论目标（可选：mr/commit/空，空则不评论）
     --mr-id int               MR的ID（comment-target=mr时必填）
     --commit-id string        Commit的hash（comment-target=commit时必填）
-    --language string         评审语言（默认：golang，可选：golang/java/python/javascript）
+    --language string         评审语言（默认：golang，可选：golang/java/python/javascript/swift/kotlin）
     --dingtalk-token string   钉钉机器人Token（可选）
     --dingtalk-secret string   钉钉机器人Secret（可选）
     --enable-dingtalk         是否启用钉钉通知（默认：false）
@@ -1141,7 +1361,17 @@ func printUsage() {
            --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
            --language python
 
-  6. 启用钉钉通知：
+  6. 评审Swift代码：
+     airvw --yunxiao-token pt-xxx --org-id 67aaaaaaaaaa --repo-id 5023797 \
+           --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
+           --language swift
+
+  7. 评审Kotlin代码：
+     airvw --yunxiao-token pt-xxx --org-id 67aaaaaaaaaa --repo-id 5023797 \
+           --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
+           --language kotlin
+
+  8. 启用钉钉通知：
      airvw --yunxiao-token pt-xxx --org-id 67aaaaaaaaaa --repo-id 5023797 \
            --from-commit xxxxxx --to-commit xxxxxx --baichuan-key sk-xxx \
            --enable-dingtalk --dingtalk-token xxx --dingtalk-secret xxx
@@ -1151,9 +1381,11 @@ func printUsage() {
   2. Java需提前安装checkstyle（可选，未安装则跳过规则检查）
   3. Python需提前安装flake8（可选，未安装则跳过规则检查）
   4. JavaScript需提前安装eslint（可选，未安装则跳过规则检查）
-  4. 百炼API Key需具备文本生成权限
-  5. 云效Token需具备Codeup MR/Commit评论权限
-  6. 仅评审新增/修改的对应语言文件，二进制文件、删除/重命名文件会被过滤
+  5. Swift需提前安装swiftlint（可选，未安装则跳过规则检查）
+  6. Kotlin需提前安装ktlint（可选，未安装则跳过规则检查）
+  7. 百炼API Key需具备文本生成权限
+  8. 云效Token需具备Codeup MR/Commit评论权限
+  9. 仅评审新增/修改的对应语言文件，二进制文件、删除/重命名文件会被过滤
 `
 	fmt.Println(usage)
 }
@@ -1175,7 +1407,7 @@ func main() {
 	flag.StringVar(&config.ReviewLevel, "level", LevelBlock, "评审等级（block/high/medium/suggest）")
 	flag.StringVar(&config.CommentTarget, "comment-target", "", "评论目标：mr（评论MR）/commit（评论Commit）/空（不评论）")
 	flag.StringVar(&config.CommitID, "commit-id", "", "评论Commit时的commit hash（comment-target=commit时必填）")
-	flag.StringVar(&config.Language, "language", "golang", "评审语言：golang/java/python（默认golang）")
+	flag.StringVar(&config.Language, "language", "golang", "评审语言：golang/java/python/javascript/swift/kotlin（默认golang）")
 	flag.BoolVar(&config.Debug, "debug", false, "是否开启调试模式，默认false")
 	flag.StringVar(&config.DingTalkToken, "dingtalk-token", "", "钉钉机器人Token（可选）")
 	flag.StringVar(&config.DingTalkSecret, "dingtalk-secret", "", "钉钉机器人Secret（可选）")
