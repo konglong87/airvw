@@ -478,7 +478,7 @@ func (p *PythonReviewProcess) GetFileExtension() string {
 type JavaScriptReviewProcess struct{}
 
 func (j *JavaScriptReviewProcess) GetFileExtension() string {
-	return ".js"
+	return ".js/.jsx/.ts/.tsx"
 }
 
 // KotlinReviewProcess Kotlin语言的评审流程实现
@@ -543,8 +543,8 @@ func (j *JavaScriptReviewProcess) GetPrompt(diffFiles map[string]string, lintRes
 	}
 
 	return fmt.Sprintf(`
-你是资深JavaScript工程师，仅评审Codeup MR中新增/修改的JavaScript代码，严格按以下要求输出：
-1. 评审维度：异步编程、错误处理、代码规范(ESLint)、逻辑漏洞、性能问题、内存泄漏、DOM操作、事件处理、跨浏览器兼容性；
+你是资深JavaScript/TypeScript工程师，仅评审Codeup MR中新增/修改的JavaScript/TypeScript代码，严格按以下要求输出：
+1. 评审维度：异步编程、错误处理、代码规范(ESLint)、逻辑漏洞、性能问题、内存泄漏、DOM操作、事件处理、跨浏览器兼容性、TypeScript类型安全、JavaScript类型安全、React组件规范；
 2. 每个问题必须标注等级，等级仅能是[%s/%s/%s/%s]，其中[%s]级问题直接阻断MR合并；
 3. 输出格式：每行一个问题，格式为「[等级] 文件名:行号 - 问题描述 - 修复建议」；
 4. 仅输出问题列表，无冗余前言/结语，无代码块，每行一条；
@@ -818,7 +818,7 @@ func GetReviewProcess(language string) ReviewProcess {
 		return &JavaReviewProcess{}
 	case "python":
 		return &PythonReviewProcess{}
-	case "javascript", "js":
+	case "javascript", "js", "typescript", "ts", "tsx":
 		return &JavaScriptReviewProcess{}
 	case "swift":
 		return &SwiftReviewProcess{}
@@ -858,8 +858,8 @@ func (j *JavaScriptReviewProcess) FilterFiles(diffItems []DiffItem) map[string]s
 			status = "modified"
 		}
 
-		// 仅保留新增/修改的JavaScript文件
-		if (status == "added" || status == "modified") && strings.HasSuffix(filePath, ".js") {
+		// 仅保留新增/修改的JavaScript/TypeScript文件
+		if (status == "added" || status == "modified") && (strings.HasSuffix(filePath, ".js") || strings.HasSuffix(filePath, ".jsx") || strings.HasSuffix(filePath, ".ts") || strings.HasSuffix(filePath, ".tsx")) {
 			diffMap[filePath] = diffItem.Diff
 			logDebug("✅【GetMRDiff】检测到需评审文件：%s（状态：%s）\n", filePath, status)
 		}
@@ -1164,8 +1164,8 @@ func CommentMR(config Config, reviewResult string) error {
 		langDesc = "Java"
 	case "python":
 		langDesc = "Python"
-	case "javascript", "js":
-		langDesc = "JavaScript"
+	case "javascript", "js", "typescript", "ts", "tsx":
+		langDesc = "JavaScript/TypeScript"
 	case "swift":
 		langDesc = "Swift"
 	case "kotlin", "kt":
@@ -1241,8 +1241,8 @@ func CommentCommit(config Config, reviewResult string) error {
 		langDesc = "Java"
 	case "python":
 		langDesc = "Python"
-	case "javascript", "js":
-		langDesc = "JavaScript"
+	case "javascript", "js", "typescript", "ts", "tsx":
+		langDesc = "JavaScript/TypeScript"
 	case "swift":
 		langDesc = "Swift"
 	case "kotlin", "kt":

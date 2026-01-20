@@ -94,14 +94,14 @@ airvw \
 
 aiutoCR 支持以下编程语言的代码评审：
 
-| 语言 | 文件扩展名 | 静态检查工具 | 语言标识符 |
-|------|------------|--------------|------------|
-| Go | .go | golangci-lint | go, golang |
-| Java | .java | checkstyle | java |
-| Python | .py | flake8 | python |
-| JavaScript | .js | eslint | js, javascript |
-| Swift | .swift | swiftlint | swift |
-| Kotlin | .kt | ktlint | kt, kotlin |
+| 语言 | 文件扩展名 | 静态检查工具 | 语言标识符               |
+|------|------------|--------------|---------------------|
+| Go | .go | golangci-lint | go, golang          |
+| Java | .java | checkstyle | java                |
+| Python | .py | flake8 | python              |
+| JavaScript | .js | eslint | js, javascript, tsx |
+| Swift | .swift | swiftlint | swift               |
+| Kotlin | .kt | ktlint | kt, kotlin          |
 
 使用 `--language` 参数指定要评审的编程语言，默认为 `golang`。
 
