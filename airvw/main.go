@@ -216,6 +216,12 @@ func DingDingRemind(token, secret, content string) {
 		markdown.WriteString(fmt.Sprintf("- **阻断原因**: %s\n", result.BlockReason))
 	}
 	markdown.WriteString(fmt.Sprintf("- **消息**: %s\n\n", result.Message))
+	
+	// 添加AI模型信息
+	if result.Model != "" {
+		markdown.WriteString("### 🤖 AI模型\n\n")
+		markdown.WriteString(fmt.Sprintf("- **模型**: %s\n\n", result.Model))
+	}
 
 	// 添加问题详情
 	if len(result.BlockIssues) > 0 {
