@@ -143,7 +143,7 @@ func formatBlockIssues(issues []string) []BlockIssue {
 	var blockIssues []BlockIssue
 	for _, issue := range issues {
 		// 解析格式: [等级] 文件名:行号 - 问题描述 - 修复建议
-		re := regexp.MustCompile(`\[([^\]]+)\]\s+([^:]+):(\d+)\s+-\s+([^\-]+)\s+-\s+(.+)`)
+		re := regexp.MustCompile(`\[([^\]]+)\]\s*([^:]+):\s*(\d+)\s*-\s*([^\-]+)\s*-\s*(.+)`)
 		matches := re.FindStringSubmatch(issue)
 		if len(matches) == 6 {
 			blockIssues = append(blockIssues, BlockIssue{
@@ -216,7 +216,7 @@ func DingDingRemind(token, secret, content string) {
 		markdown.WriteString(fmt.Sprintf("- **阻断原因**: %s\n", result.BlockReason))
 	}
 	markdown.WriteString(fmt.Sprintf("- **消息**: %s\n\n", result.Message))
-	
+
 	// 添加AI模型信息
 	if result.Model != "" {
 		markdown.WriteString("### 🤖 AI模型\n\n")
