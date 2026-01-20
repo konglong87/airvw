@@ -35,6 +35,7 @@ type Config struct {
 	CommentTarget  string // 评论目标：mr（默认）/commit/空（不评论）
 	CommitID       string // 评论Commit时的commit hash（comment-target=commit时必填）
 	Language       string // 评审语言：golang/java/python/javascript（默认golang）
+	Model          string // AI模型名称，默认qwen3-coder-plus
 	Debug          bool   // 是否开启调试模式，默认false
 	DingTalkToken  string // 钉钉机器人Token
 	DingTalkSecret string // 钉钉机器人Secret
@@ -77,8 +78,7 @@ type CompareResponseV2 struct {
 			Deletions int `json:"deletions"`
 			Total     int `json:"total"`
 		} `json:"stats"`
-		Title  string `json:"title"`
-		WebUrl string `json:"webUrl"`
+		Title string `json:"title"`
 	} `json:"commits"`
 	Diffs []struct {
 		AMode       string `json:"aMode"`
@@ -129,13 +129,13 @@ type ReviewResult struct {
 	BlockIssues []BlockIssue `json:"block_issues,omitempty"` // 阻断问题列表
 	Message     string       `json:"message"`                // 消息
 	CommitInfo  *CommitInfo  `json:"commit_info,omitempty"`  // Commit信息
+	Model       string       `json:"model,omitempty"`        // 使用的AI模型
 }
 
 // CommitInfo Commit信息结构体
 type CommitInfo struct {
 	AuthorName string `json:"author_name"` // 提交人姓名
 	Message    string `json:"message"`     // 提交消息
-	WebUrl     string `json:"web_url"`     // Web链接
 }
 
 // formatBlockIssues 将问题字符串转换为结构化的BlockIssue
@@ -205,7 +205,7 @@ func DingDingRemind(token, secret, content string) {
 		markdown.WriteString("### 📝 Commit信息\n\n")
 		markdown.WriteString(fmt.Sprintf("- **提交人**: %s\n", result.CommitInfo.AuthorName))
 		markdown.WriteString(fmt.Sprintf("- **提交消息**: %s\n", result.CommitInfo.Message))
-		markdown.WriteString(fmt.Sprintf("- **Web链接**: [%s](%s)\n\n", result.CommitInfo.WebUrl, result.CommitInfo.WebUrl))
+		//markdown.WriteString(fmt.Sprintf("- **Web链接**: [%s](%s)\n\n", result.CommitInfo.WebUrl, result.CommitInfo.WebUrl))
 	}
 
 	// 添加评审结果
@@ -958,7 +958,6 @@ func GetMRDiff(config Config, process ReviewProcess) (map[string]string, *Commit
 		commitInfo = &CommitInfo{
 			AuthorName: commit.AuthorName,
 			Message:    commit.Message,
-			WebUrl:     commit.WebUrl,
 		}
 	}
 
@@ -1038,8 +1037,14 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 	// 使用ReviewProcess接口获取prompt
 	prompt := process.GetPrompt(diffFiles, lintResults)
 
+	// 使用配置的模型名称，如果没有指定则使用默认值
+	modelName := "qwen3-coder-plus"
+	if config.Model != "" {
+		modelName = config.Model
+	}
+
 	requestBody := map[string]interface{}{
-		"model": "qwen3-coder-plus",
+		"model": modelName,
 		"input": map[string]interface{}{
 			"messages": []map[string]interface{}{
 				{
@@ -1330,6 +1335,7 @@ func printUsage() {
     --mr-id int               MR的ID（comment-target=mr时必填）
     --commit-id string        Commit的hash（comment-target=commit时必填）
     --language string         评审语言（默认：golang，可选：golang/java/python/javascript/swift/kotlin）
+    --model string            AI模型名称（默认：qwen3-coder-plus）
     --dingtalk-token string   钉钉机器人Token（可选）
     --dingtalk-secret string   钉钉机器人Secret（可选）
     --enable-dingtalk         是否启用钉钉通知（默认：false）
@@ -1408,6 +1414,7 @@ func main() {
 	flag.StringVar(&config.CommentTarget, "comment-target", "", "评论目标：mr（评论MR）/commit（评论Commit）/空（不评论）")
 	flag.StringVar(&config.CommitID, "commit-id", "", "评论Commit时的commit hash（comment-target=commit时必填）")
 	flag.StringVar(&config.Language, "language", "golang", "评审语言：golang/java/python/javascript/swift/kotlin（默认golang）")
+	flag.StringVar(&config.Model, "model", "qwen3-coder-plus", "AI模型名称（默认qwen3-coder-plus）")
 	flag.BoolVar(&config.Debug, "debug", false, "是否开启调试模式，默认false")
 	flag.StringVar(&config.DingTalkToken, "dingtalk-token", "", "钉钉机器人Token（可选）")
 	flag.StringVar(&config.DingTalkSecret, "dingtalk-secret", "", "钉钉机器人Secret（可选）")
@@ -1517,6 +1524,7 @@ func main() {
 			BlockIssues: formattedIssues,
 			Message:     fmt.Sprintf("检测到%d个%s问题，终止流程", len(blockList), blockReason),
 			CommitInfo:  commitInfo,
+			Model:       config.Model,
 		}
 		fmt.Println("\n======= ********** [代码问题详情] ********** =======")
 		printJSONResult(result)
@@ -1558,6 +1566,7 @@ func main() {
 			BlockIssues: formattedIssues,
 			Message:     fmt.Sprintf("评审通过，发现%d个非阻塞问题", len(allIssues)),
 			CommitInfo:  commitInfo,
+			Model:       config.Model,
 		}
 		fmt.Println("\n======= ********** [AI评审建议详情] ********** =======")
 		printJSONResult(result)

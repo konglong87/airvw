@@ -8,7 +8,7 @@ aiutoCR 是一款面向阿里云效Codeup的AI代码评审工具，支持自动�
 ## ✨ 核心功能
 - 📥 自动拉取Codeup MR/Commit的多种编程语言代码变更（支持Go/Java/Python/JavaScript/Swift/Kotlin）
 - 🔍 集成各语言对应的静态检查工具（golangci-lint/checkstyle/flake8/eslint/swiftlint/ktlint）
-- 🤖 调用阿里云百炼Qwen3-Coder-Plus模型[可选]进行AI智能评审
+- 🤖 调用阿里云百炼AI模型进行智能评审，支持自定义模型选择（默认qwen3-coder-plus）
 - 💬 自动将评审结果评论到Codeup MR/Commit[可选]
 - 🚫 阻断级问题自动终止流程，强制修复后才能合并
 - 📝 详细的日志输出，便于问题排查
@@ -78,6 +78,16 @@ airvw \
   --to-commit 目标CommitID \
   --baichuan-key 你的百炼Key \
   --language kotlin
+
+# 使用自定义AI模型
+airvw \
+  --yunxiao-token 新的Token \
+  --org-id 你的组织ID \
+  --repo-id 你的仓库ID \
+  --from-commit 源CommitID \
+  --to-commit 目标CommitID \
+  --baichuan-key 你的百炼Key \
+  --model qwen3-coder-plus
 ```
 
 ## 🌍 语言支持
@@ -94,6 +104,29 @@ aiutoCR 支持以下编程语言的代码评审：
 | Kotlin | .kt | ktlint | kt, kotlin |
 
 使用 `--language` 参数指定要评审的编程语言，默认为 `golang`。
+
+## 🤖 AI模型配置
+
+aiutoCR 支持通过 `--model` 参数指定使用的 AI 模型，默认使用 `qwen3-coder-plus` 模型。
+
+### 支持的模型
+- `qwen3-coder-plus` - 默认模型，代码评审专用
+- `qwen3-coder` - 代码评审基础模型
+- `qwen3-plus` - 通用增强模型
+- `qwen3-turbo` - 高速推理模型
+- `qwen3` - 通用模型
+
+### 使用示例
+```bash
+# 使用默认模型
+airvw --yunxiao-token xxx --org-id xxx --repo-id xxx --from-commit xxx --to-commit xxx --baichuan-key xxx
+
+# 指定使用 qwen3-coder 模型
+airvw --yunxiao-token xxx --org-id xxx --repo-id xxx --from-commit xxx --to-commit xxx --baichuan-key xxx --model qwen3-coder
+
+# 指定使用 qwen3-turbo 模型
+airvw --yunxiao-token xxx --org-id xxx --repo-id xxx --from-commit xxx --to-commit xxx --baichuan-key xxx --model qwen3-turbo
+```
 
 ## 📖 使用说明
 
@@ -117,4 +150,5 @@ aiutoCR 支持以下编程语言的代码评审：
 | 参数校验        | 缺失参数时自动打印帮助信息，降低使用门槛 |
 | 钉钉通知        | 支持钉钉机器人实时推送评审结果，支持@所有人 |
 | 多语言支持      | 支持Go/Java/Python/JavaScript/Swift/Kotlin六种编程语言的代码评审 |
+| AI模型配置      | 支持自定义选择AI模型，默认使用qwen3-coder-plus |
 
