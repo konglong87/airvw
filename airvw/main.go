@@ -241,7 +241,7 @@ func DingDingRemind(token, secret, content string) {
 	err := cli.SendMarkDownMessage("AI代码审查结果通知", markdown.String(), dingtalk.WithAtAll())
 	//err := cli.SendMarkdownMessage("AI代码审查结果通知", markdown.String(), dingtalk.WithAtAll())
 	if err != nil {
-		logDebug("钉钉机器人发送失败: %v\n", err)
+		logDebugln("钉钉机器人发送失败: %v\n", err)
 		return
 	}
 	logDebugln("钉钉消息发送成功！")
