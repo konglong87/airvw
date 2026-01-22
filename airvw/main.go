@@ -225,7 +225,7 @@ func DingDingRemind(token, secret, content string) {
 
 	// 添加问题详情
 	if len(result.BlockIssues) > 0 {
-		markdown.WriteString("### 🐛 问题详情\n\n")
+		markdown.WriteString("### 🐛 问题和建议\n\n")
 		for i, issue := range result.BlockIssues {
 			markdown.WriteString(fmt.Sprintf("**%d. [%s] %s:%s**\n\n", i+1, issue.Level, issue.File, issue.Line))
 			markdown.WriteString(fmt.Sprintf("- 问题描述: %s\n", issue.Issue))
