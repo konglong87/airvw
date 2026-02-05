@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +41,7 @@ type Config struct {
 	DingTalkToken  string // 钉钉机器人Token
 	DingTalkSecret string // 钉钉机器人Secret
 	EnableDingTalk bool   // 是否启用钉钉通知，默认false
+	MaxIssues      int    // 钉钉通知中显示的最大问题数量，默认10
 }
 
 // DiffItem 对应接口返回的diffs数组元素
@@ -138,7 +140,7 @@ type CommitInfo struct {
 	Message    string `json:"message"`     // 提交消息
 }
 
-// formatBlockIssues 将问题字符串转换为结构化的BlockIssue
+// formatBlockIssues 将问题字符串转换为结构化的BlockIssue，并按重要性等级排序
 func formatBlockIssues(issues []string) []BlockIssue {
 	var blockIssues []BlockIssue
 	for _, issue := range issues {
@@ -164,6 +166,27 @@ func formatBlockIssues(issues []string) []BlockIssue {
 			})
 		}
 	}
+	// 按重要性等级排序：block > high > medium > suggest > unknown
+	levelPriority := map[string]int{
+		LevelBlock:   0,
+		LevelHigh:    1,
+		LevelMedium:  2,
+		LevelSuggest: 3,
+		"unknown":    4,
+	}
+
+	sort.Slice(blockIssues, func(i, j int) bool {
+		priorityI, okI := levelPriority[blockIssues[i].Level]
+		priorityJ, okJ := levelPriority[blockIssues[j].Level]
+		if !okI {
+			priorityI = 4
+		}
+		if !okJ {
+			priorityJ = 4
+		}
+		return priorityI < priorityJ
+	})
+
 	return blockIssues
 }
 
@@ -178,7 +201,7 @@ func printJSONResult(result ReviewResult) {
 }
 
 // DingDingRemind 发送钉钉消息通知
-func DingDingRemind(token, secret, content string) {
+func DingDingRemind(token, secret, content string, maxIssues int) {
 	// 初始化钉钉客户端（自动处理加签逻辑）
 	cli := dingtalk.InitDingTalkWithSecret(token, secret)
 
@@ -226,7 +249,13 @@ func DingDingRemind(token, secret, content string) {
 	// 添加问题详情
 	if len(result.BlockIssues) > 0 {
 		markdown.WriteString("### 🐛 问题和建议\n\n")
-		for i, issue := range result.BlockIssues {
+		// 限制显示的问题数量
+		issuesToShow := result.BlockIssues
+		if maxIssues > 0 && len(issuesToShow) > maxIssues {
+			issuesToShow = issuesToShow[:maxIssues]
+			markdown.WriteString(fmt.Sprintf("**注意**: 仅显示前%d个问题（共%d个）\n\n", maxIssues, result.TotalIssues))
+		}
+		for i, issue := range issuesToShow {
 			markdown.WriteString(fmt.Sprintf("**%d. [%s] %s:%s**\n\n", i+1, issue.Level, issue.File, issue.Line))
 			markdown.WriteString(fmt.Sprintf("- 问题描述: %s\n", issue.Issue))
 			if issue.Suggestion != "" {
@@ -1345,6 +1374,7 @@ func printUsage() {
     --dingtalk-token string   钉钉机器人Token（可选）
     --dingtalk-secret string   钉钉机器人Secret（可选）
     --enable-dingtalk         是否启用钉钉通知（默认：false）
+    --max-issues int          钉钉通知中显示的最大问题数量（默认：10）
     --help                    显示此帮助信息
 
 💡 使用示例：
@@ -1425,6 +1455,7 @@ func main() {
 	flag.StringVar(&config.DingTalkToken, "dingtalk-token", "", "钉钉机器人Token（可选）")
 	flag.StringVar(&config.DingTalkSecret, "dingtalk-secret", "", "钉钉机器人Secret（可选）")
 	flag.BoolVar(&config.EnableDingTalk, "enable-dingtalk", false, "是否启用钉钉通知，默认false")
+	flag.IntVar(&config.MaxIssues, "max-issues", 10, "钉钉通知中显示的最大问题数量，默认10")
 	flag.Parse()
 
 	debugMode = config.Debug
@@ -1538,7 +1569,7 @@ func main() {
 		// 发送钉钉通知
 		if config.EnableDingTalk {
 			jsonData, _ := json.MarshalIndent(result, "", "  ")
-			DingDingRemind(config.DingTalkToken, config.DingTalkSecret, string(jsonData))
+			DingDingRemind(config.DingTalkToken, config.DingTalkSecret, string(jsonData), config.MaxIssues)
 		}
 
 		os.Exit(1)
@@ -1580,7 +1611,7 @@ func main() {
 		// 发送钉钉通知
 		if config.EnableDingTalk {
 			jsonData, _ := json.MarshalIndent(result, "", "  ")
-			DingDingRemind(config.DingTalkToken, config.DingTalkSecret, string(jsonData))
+			DingDingRemind(config.DingTalkToken, config.DingTalkSecret, string(jsonData), config.MaxIssues)
 		}
 	}
 

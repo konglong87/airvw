@@ -13,6 +13,8 @@ aiutoCR 是一款面向阿里云效Codeup的AI代码评审工具，支持自动�
 - 🚫 阻断级问题自动终止流程，强制修复后才能合并
 - 📝 详细的日志输出，便于问题排查
 - 🔔 支持钉钉机器人通知，评审结果实时推送[可选]
+- 📊 问题按照重要性等级排序显示（block > high > medium > suggest）
+- 🔢 支持限制钉钉通知中显示的最大问题数量，避免信息过多造成干扰
 
 ## 📦 安装
 
@@ -88,6 +90,32 @@ airvw \
   --to-commit 目标CommitID \
   --baichuan-key 你的百炼Key \
   --model qwen3-coder-plus
+
+# 限制钉钉通知中显示的问题数量为5个
+airvw \
+  --yunxiao-token 新的Token \
+  --org-id 你的组织ID \
+  --repo-id 你的仓库ID \
+  --from-commit 源CommitID \
+  --to-commit 目标CommitID \
+  --baichuan-key 你的百炼Key \
+  --enable-dingtalk \
+  --dingtalk-token 你的钉钉Token \
+  --dingtalk-secret 你的钉钉Secret \
+  --max-issues 5
+
+# 显示所有问题（不限制数量）
+airvw \
+  --yunxiao-token 新的Token \
+  --org-id 你的组织ID \
+  --repo-id 你的仓库ID \
+  --from-commit 源CommitID \
+  --to-commit 目标CommitID \
+  --baichuan-key 你的百炼Key \
+  --enable-dingtalk \
+  --dingtalk-token 你的钉钉Token \
+  --dingtalk-secret 你的钉钉Secret \
+  --max-issues 0
 ```
 
 ## 🌍 语言支持
@@ -139,7 +167,10 @@ airvw --yunxiao-token xxx --org-id xxx --repo-id xxx --from-commit xxx --to-comm
 - 在钉钉群中添加自定义机器人，获取Webhook地址中的Token和加签Secret；
 - 使用`--enable-dingtalk`参数启用钉钉通知功能；
 - 配置`--dingtalk-token`和`--dingtalk-secret`参数；
-- 评审完成后会自动将结果发送到钉钉群，支持@所有人提醒。
+- 评审完成后会自动将结果发送到钉钉群，支持@所有人提醒；
+- 问题按照重要性等级排序显示（block > high > medium > suggest）；
+- 使用`--max-issues`参数可控制钉钉通知中显示的最大问题数量，默认为10，避免信息过多造成干扰；
+- 当问题数量超过限制时，钉钉通知中会显示"仅显示前N个问题（共M个）"的提示信息。
 
 
 ### 总结
@@ -149,6 +180,8 @@ airvw --yunxiao-token xxx --org-id xxx --repo-id xxx --from-commit xxx --to-comm
 | README.md文档 | 包含安装、使用、参数、示例、常见问题 |
 | 参数校验        | 缺失参数时自动打印帮助信息，降低使用门槛 |
 | 钉钉通知        | 支持钉钉机器人实时推送评审结果，支持@所有人 |
+| 问题排序        | 问题按照重要性等级排序显示（block > high > medium > suggest） |
+| 问题数量限制    | 使用`--max-issues`参数控制钉钉通知中显示的最大问题数量，默认为10 |
 | 多语言支持      | 支持Go/Java/Python/JavaScript/Swift/Kotlin六种编程语言的代码评审 |
 | AI模型配置      | 支持自定义选择AI模型，默认使用qwen3-coder-plus |
 
