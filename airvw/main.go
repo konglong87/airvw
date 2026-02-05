@@ -954,7 +954,7 @@ func GetMRDiff(config Config, process ReviewProcess) (map[string]string, *Commit
 	logDebug("  - ReviewLevel: %s\n", config.ReviewLevel)
 	logDebug("  - CommentTarget: %s\n", config.CommentTarget)
 	logDebug("  - CommitID: %s\n", config.CommitID)
-	logDebugln("=====================================")
+	logDebugln("=======================================")
 
 	logDebugln("🔍 开始拉取MR变更代码（云效OpenAPI）...")
 
