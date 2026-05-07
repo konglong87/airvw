@@ -1107,6 +1107,7 @@ func AICodeReview(config Config, diffFiles map[string]string, lintResults map[st
 		SetHeader("Content-Type", "application/json").
 		SetHeader("Authorization", fmt.Sprintf("Bearer %s", config.BaichuanAPIKey)).
 		SetBody(requestBody).
+		//Post("https://coding.dashscope.aliyuncs.com/v1/chat/completions")//coding plan
 		Post("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation")
 
 	if err != nil {
